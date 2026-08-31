@@ -37,6 +37,7 @@ export class ResearchEngine {
   constructor(knowledge, options = {}) {
     this.knowledge = knowledge;
     this.fetcher = options.fetcher || fetch;
+    this.resolveHost = options.resolveHost || assertPublicHost;
     this.timeoutMs = options.timeoutMs ?? 10_000;
     this.maxBytes = options.maxBytes ?? 1_000_000;
     this.allowHosts = options.allowHosts ? new Set(options.allowHosts.map(String)) : null;
@@ -45,7 +46,7 @@ export class ResearchEngine {
   async ingestUrl(input) {
     const parsed = normalizeUrl(input?.url);
     if (this.allowHosts && !this.allowHosts.has(parsed.hostname)) throw new Error('source host is not allowlisted');
-    await assertPublicHost(parsed.hostname);
+    await this.resolveHost(parsed.hostname);
     const url = parsed.toString();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
