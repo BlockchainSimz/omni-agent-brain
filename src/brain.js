@@ -1,8 +1,15 @@
 import crypto from 'node:crypto';
 import { JsonPersistence } from './persistence.js';
+import { retrieveMemories } from './retrieval.js';
 
 const STATUSES = new Set(['candidate', 'validated', 'promoted', 'rejected', 'deprecated']);
 const SECRET_KEYS = /api[_-]?key|token|secret|password|authorization|credential/i;
+
+class MemoryPersistence {
+  constructor() { this.snapshotValue = null; }
+  load() { return this.snapshotValue; }
+  save(snapshot) { this.snapshotValue = structuredClone(snapshot); }
+}
 
 function sanitizeMetadata(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -10,9 +17,9 @@ function sanitizeMetadata(value) {
 }
 
 export class BrainStore {
-  constructor(persistence = new JsonPersistence()) {
-    this.persistence = persistence;
-    const saved = persistence.load();
+  constructor(persistence) {
+    this.persistence = persistence || (process.env.NODE_ENV === 'test' ? new MemoryPersistence() : new JsonPersistence());
+    const saved = this.persistence.load();
     this.memories = new Map((saved?.memories || []).map(x => [x.id, x]));
     this.skills = new Map((saved?.skills || []).map(x => [x.id, x]));
     this.audit = saved?.audit || [];
@@ -27,6 +34,7 @@ export class BrainStore {
     const item = { id, type: input.type ?? 'semantic', content: input.content, source: input.source, sourceHash: sha256(input.source), confidence: clamp(input.confidence ?? 0.5), status: 'candidate', createdAt: new Date().toISOString(), lastValidatedAt: null, metadata: sanitizeMetadata(input.metadata) };
     this.memories.set(id, item); this.record('memory.created', id, { sourceHash: item.sourceHash, confidence: item.confidence }); this.persist(); return structuredClone(item);
   }
+  searchMemories(query, options = {}) { return retrieveMemories(this.memories.values(), query, options); }
   validateMemory(id, result) {
     const item = this.requireMemory(id);
     if (!result || typeof result.passed !== 'boolean') throw new Error('validation result must include passed');
@@ -61,4 +69,4 @@ export class BrainStore {
 }
 export function sha256(value) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
 export function clamp(value) { const n = Number(value); return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0; }
-export { STATUSES, sanitizeMetadata };
+export { STATUSES, sanitizeMetadata, MemoryPersistence };
