@@ -5,6 +5,8 @@ import { LearningPipeline } from './learning.js';
 import { KnowledgeService } from './knowledge.js';
 import { ResearchEngine } from './research.js';
 import { consolidate, detectConflicts } from './consolidation.js';
+import { validateRequest, RateLimiter, createRequestContext, errorResponse } from './service-hardening.js';
+import { RuntimeObservability } from './runtime-observability.js';
 
 const store = new BrainStore();
 const learning = new LearningPipeline(store);
@@ -14,12 +16,12 @@ const research = new ResearchEngine(knowledge, {
 });
 const port = Number(process.env.PORT || 3000);
 const apiKey = process.env.OMNI_BRAIN_API_KEY || '';
-const windowMs = 60_000;
-const maxRequests = 60;
-const rates = new Map();
+const limiter = new RateLimiter({ limit: Number(process.env.OMNI_BRAIN_RATE_LIMIT || 60), windowMs: 60_000 });
+const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true } });
+let acceptingRequests = true;
 
-function json(res, status, body) {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+function json(res, status, body, requestId) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-request-id': requestId });
   res.end(JSON.stringify(body));
 }
 function authorized(req) {
@@ -28,42 +30,47 @@ function authorized(req) {
   if (!supplied || supplied.length !== apiKey.length) return false;
   return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(apiKey));
 }
-function rateLimited(req) {
-  const key = req.socket.remoteAddress || 'unknown'; const now = Date.now();
-  const entry = rates.get(key) || { start: now, count: 0 };
-  if (now - entry.start >= windowMs) { entry.start = now; entry.count = 0; }
-  entry.count += 1; rates.set(key, entry); return entry.count > maxRequests;
-}
 async function body(req) {
   const chunks = []; let size = 0;
-  for await (const chunk of req) { size += chunk.length; if (size > 1_000_000) throw new Error('request body too large'); chunks.push(chunk); }
+  for await (const chunk of req) { size += chunk.length; if (size > 64 * 1024) throw new Error('request_too_large'); chunks.push(chunk); }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { throw new Error('invalid JSON body'); }
 }
+
 const server = http.createServer(async (req, res) => {
+  const context = createRequestContext(req.headers);
+  const operation = observability.start({ correlationId: context.requestId });
   try {
-    if (rateLimited(req)) return json(res, 429, { error: 'rate_limited' });
+    if (!acceptingRequests) return json(res, 503, { error: 'service_unavailable', requestId: context.requestId }, context.requestId);
+    const rate = limiter.check(req.socket.remoteAddress || 'unknown');
+    if (!rate.allowed) return json(res, 429, { error: 'rate_limited', requestId: context.requestId }, context.requestId);
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, service: 'omni-agent-brain' });
-    if (!authorized(req)) return json(res, 401, { error: 'unauthorized' });
-    if (req.method === 'GET' && url.pathname === '/v1/snapshot') return json(res, 200, store.snapshot());
-    if (req.method === 'GET' && url.pathname === '/v1/memories/search') return json(res, 200, { results: store.searchMemories(url.searchParams.get('q') || '', { limit: url.searchParams.get('limit'), minScore: url.searchParams.get('minScore') }) });
-    if (req.method === 'POST' && url.pathname === '/v1/memories') return json(res, 201, store.remember(await body(req)));
-    if (req.method === 'POST' && url.pathname.startsWith('/v1/memories/') && url.pathname.endsWith('/validate')) return json(res, 200, store.validateMemory(url.pathname.split('/')[3], await body(req)));
-    if (req.method === 'POST' && url.pathname === '/v1/knowledge') return json(res, 201, knowledge.ingestDocument(await body(req)));
-    if (req.method === 'POST' && url.pathname === '/v1/knowledge/batch') return json(res, 201, knowledge.ingestBatch(await body(req)));
-    if (req.method === 'POST' && url.pathname === '/v1/research/url') return json(res, 201, await research.ingestUrl(await body(req)));
-    if (req.method === 'POST' && url.pathname === '/v1/research/batch') return json(res, 201, await research.ingestUrls(await body(req)));
-    if (req.method === 'GET' && url.pathname === '/v1/knowledge/conflicts') return json(res, 200, { conflicts: detectConflicts(store.snapshot().memories) });
-    if (req.method === 'GET' && url.pathname === '/v1/knowledge/consolidation') return json(res, 200, consolidate(store.snapshot().memories));
-    if (req.method === 'POST' && url.pathname === '/v1/skills') return json(res, 201, store.proposeSkill(await body(req)));
-    if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/promote')) return json(res, 200, store.promoteSkill(url.pathname.split('/')[3], await body(req)));
-    if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/rollback')) { const input = await body(req); return json(res, 200, store.rollbackSkill(url.pathname.split('/')[3], input.reason)); }
-    json(res, 404, { error: 'not_found' });
+    if (req.method === 'GET' && (url.pathname === '/health' || url.pathname === '/ready')) return json(res, 200, observability.health(), context.requestId);
+    if (!authorized(req)) return json(res, 401, { error: 'unauthorized', requestId: context.requestId }, context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/snapshot') return json(res, 200, store.snapshot(), context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/memories/search') return json(res, 200, { results: store.searchMemories(url.searchParams.get('q') || '', { limit: url.searchParams.get('limit'), minScore: url.searchParams.get('minScore') }) }, context.requestId);
+    if (req.method === 'POST' && url.pathname === '/v1/memories') return json(res, 201, store.remember(validateRequest(await body(req), { required: ['content'] })), context.requestId);
+    if (req.method === 'POST' && url.pathname.startsWith('/v1/memories/') && url.pathname.endsWith('/validate')) return json(res, 200, store.validateMemory(url.pathname.split('/')[3], await body(req)), context.requestId);
+    if (req.method === 'POST' && url.pathname === '/v1/knowledge') return json(res, 201, knowledge.ingestDocument(await body(req)), context.requestId);
+    if (req.method === 'POST' && url.pathname === '/v1/knowledge/batch') return json(res, 201, knowledge.ingestBatch(await body(req)), context.requestId);
+    if (req.method === 'POST' && url.pathname === '/v1/research/url') return json(res, 201, await research.ingestUrl(await body(req)), context.requestId);
+    if (req.method === 'POST' && url.pathname === '/v1/research/batch') return json(res, 201, await research.ingestUrls(await body(req)), context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/knowledge/conflicts') return json(res, 200, { conflicts: detectConflicts(store.snapshot().memories) }, context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/knowledge/consolidation') return json(res, 200, consolidate(store.snapshot().memories), context.requestId);
+    if (req.method === 'POST' && url.pathname === '/v1/skills') return json(res, 201, store.proposeSkill(await body(req)), context.requestId);
+    if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/promote')) return json(res, 200, store.promoteSkill(url.pathname.split('/')[3], await body(req)), context.requestId);
+    if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/rollback')) { const input = await body(req); return json(res, 200, store.rollbackSkill(url.pathname.split('/')[3], input.reason), context.requestId); }
+    return json(res, 404, { error: 'not_found', requestId: context.requestId }, context.requestId);
   } catch (error) {
-    const message = String(error.message || 'internal error');
-    const status = /not found|required|must include|blocked|requires|too large|invalid JSON|only candidate|only promoted|not allowlisted|private network|HTTP\(S\)|unsupported source|resolves to/i.test(message) ? 400 : 500;
-    json(res, status, { error: status === 500 ? 'internal_error' : 'invalid_request', message });
+    const response = errorResponse(error, context.requestId);
+    const safe = response.status === 500 ? response : { ...response, body: { ...response.body, error: response.body.error === 'request_too_large' ? 'request_too_large' : 'invalid_request' } };
+    return json(res, safe.status, safe.body, context.requestId);
+  } finally {
+    observability.complete(operation, { status: res.statusCode >= 500 ? 'error' : 'success' });
   }
 });
+
+const shutdown = () => { acceptingRequests = false; server.close(() => process.exit(0)); setTimeout(() => process.exit(1), 10_000).unref(); };
+process.once('SIGTERM', shutdown);
+process.once('SIGINT', shutdown);
 if (process.env.NODE_ENV !== 'test') server.listen(port, () => console.log(`Omni Agent Brain listening on ${port}`));
-export { server, store, rateLimited, research, knowledge, learning };
+export { server, store, research, knowledge, learning, limiter, observability };
