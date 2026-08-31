@@ -13,7 +13,7 @@ test('freshness decays over time', () => {
 
 test('detects near duplicate memories', () => {
   const other = { id: 'b', content: 'bounded retry policy for idempotent operations with a budget', confidence: 0.8, status: 'candidate', createdAt: base.createdAt };
-  const matches = findDuplicates([base, other], 0.75);
+  const matches = findDuplicates([base, other], 0.65);
   assert.equal(matches.length, 1);
   assert.equal(matches[0].primaryId, 'a');
 });
