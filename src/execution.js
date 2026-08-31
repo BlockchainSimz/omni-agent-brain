@@ -6,6 +6,7 @@ export class ExecutionPolicy {
     const rule = this.capabilities.get(name);
     if (!rule || rule.enabled !== true) throw new Error(`capability not permitted: ${name}`);
     if (rule.validate && !rule.validate(input)) throw new Error(`capability input rejected: ${name}`);
+    if (typeof rule.execute !== 'function') throw new Error(`capability has no executor: ${name}`);
     return rule;
   }
 }
@@ -21,13 +22,16 @@ export class ExecutionEngine {
   async execute(name, input = {}) {
     const executionId = crypto.randomUUID();
     const startedAt = Date.now();
-    let rule;
     try {
-      rule = this.policy.authorize(name, input);
+      const rule = this.policy.authorize(name, input);
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      const timer = setTimeout(() => controller.abort(new Error('execution_timeout')), this.timeoutMs);
+      const task = Promise.resolve().then(() => rule.execute(input, { signal: controller.signal, executionId }));
       try {
-        const result = await rule.execute(input, { signal: controller.signal, executionId });
+        const result = await Promise.race([
+          task,
+          new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(controller.signal.reason || new Error('execution_timeout')), { once: true }))
+        ]);
         const serialized = JSON.stringify(result ?? null);
         if (Buffer.byteLength(serialized, 'utf8') > this.maxOutputBytes) throw new Error('tool output exceeds configured limit');
         const response = { executionId, ok: true, result, durationMs: Date.now() - startedAt };
@@ -35,7 +39,8 @@ export class ExecutionEngine {
         return response;
       } finally { clearTimeout(timer); }
     } catch (error) {
-      const response = { executionId, ok: false, error: error.name === 'AbortError' ? 'execution_timeout' : error.message, durationMs: Date.now() - startedAt };
+      const isTimeout = error?.message === 'execution_timeout' || error?.name === 'AbortError';
+      const response = { executionId, ok: false, error: isTimeout ? 'execution_timeout' : error.message, durationMs: Date.now() - startedAt };
       this.audit({ type: 'tool.executed', executionId, capability: name, ok: false, error: response.error, durationMs: response.durationMs });
       return response;
     }
