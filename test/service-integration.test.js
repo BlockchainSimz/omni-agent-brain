@@ -9,7 +9,8 @@ const request = (server, { method = 'GET', path = '/health', headers = {}, body 
 });
 
 test('hardened service exposes health and request correlation', async () => {
-  process.env.NODE_ENV = 'test';
+  process.env.NODE_ENV = 'production';
+  delete process.env.OMNI_BRAIN_API_KEY;
   const { server } = await import('../src/index.js');
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   try {
