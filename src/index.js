@@ -1,8 +1,17 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { BrainStore } from './brain.js';
+import { LearningPipeline } from './learning.js';
+import { KnowledgeService } from './knowledge.js';
+import { ResearchEngine } from './research.js';
+import { consolidate, detectConflicts } from './consolidation.js';
 
 const store = new BrainStore();
+const learning = new LearningPipeline(store);
+const knowledge = new KnowledgeService(learning);
+const research = new ResearchEngine(knowledge, {
+  allowHosts: process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST ? process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST.split(',').map(x => x.trim()).filter(Boolean) : undefined
+});
 const port = Number(process.env.PORT || 3000);
 const apiKey = process.env.OMNI_BRAIN_API_KEY || '';
 const windowMs = 60_000;
@@ -40,15 +49,21 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/v1/memories/search') return json(res, 200, { results: store.searchMemories(url.searchParams.get('q') || '', { limit: url.searchParams.get('limit'), minScore: url.searchParams.get('minScore') }) });
     if (req.method === 'POST' && url.pathname === '/v1/memories') return json(res, 201, store.remember(await body(req)));
     if (req.method === 'POST' && url.pathname.startsWith('/v1/memories/') && url.pathname.endsWith('/validate')) return json(res, 200, store.validateMemory(url.pathname.split('/')[3], await body(req)));
+    if (req.method === 'POST' && url.pathname === '/v1/knowledge') return json(res, 201, knowledge.ingestDocument(await body(req)));
+    if (req.method === 'POST' && url.pathname === '/v1/knowledge/batch') return json(res, 201, knowledge.ingestBatch(await body(req)));
+    if (req.method === 'POST' && url.pathname === '/v1/research/url') return json(res, 201, await research.ingestUrl(await body(req)));
+    if (req.method === 'POST' && url.pathname === '/v1/research/batch') return json(res, 201, await research.ingestUrls(await body(req)));
+    if (req.method === 'GET' && url.pathname === '/v1/knowledge/conflicts') return json(res, 200, { conflicts: detectConflicts(store.snapshot().memories) });
+    if (req.method === 'GET' && url.pathname === '/v1/knowledge/consolidation') return json(res, 200, consolidate(store.snapshot().memories));
     if (req.method === 'POST' && url.pathname === '/v1/skills') return json(res, 201, store.proposeSkill(await body(req)));
     if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/promote')) return json(res, 200, store.promoteSkill(url.pathname.split('/')[3], await body(req)));
     if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/rollback')) { const input = await body(req); return json(res, 200, store.rollbackSkill(url.pathname.split('/')[3], input.reason)); }
     json(res, 404, { error: 'not_found' });
   } catch (error) {
     const message = String(error.message || 'internal error');
-    const status = /not found|required|must include|blocked|requires|too large|invalid JSON|only candidate|only promoted/i.test(message) ? 400 : 500;
+    const status = /not found|required|must include|blocked|requires|too large|invalid JSON|only candidate|only promoted|not allowlisted|private network|HTTP\(S\)|unsupported source|resolves to/i.test(message) ? 400 : 500;
     json(res, status, { error: status === 500 ? 'internal_error' : 'invalid_request', message });
   }
 });
 if (process.env.NODE_ENV !== 'test') server.listen(port, () => console.log(`Omni Agent Brain listening on ${port}`));
-export { server, store, rateLimited };
+export { server, store, rateLimited, research, knowledge, learning };
