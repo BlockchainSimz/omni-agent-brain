@@ -1,12 +1,36 @@
 import crypto from 'node:crypto';
+import dns from 'node:dns/promises';
+import net from 'node:net';
 
 const TRUST = new Set(['official', 'verified', 'community', 'unknown']);
+
+function isPrivateAddress(address) {
+  if (net.isIPv4(address)) {
+    const [a, b] = address.split('.').map(Number);
+    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  }
+  if (net.isIPv6(address)) {
+    const normalized = address.toLowerCase();
+    return normalized === '::1' || normalized === '::' || normalized.startsWith('fc') || normalized.startsWith('fd') || normalized.startsWith('fe80:') || normalized.startsWith('::ffff:127.');
+  }
+  return false;
+}
+
+async function assertPublicHost(hostname) {
+  const host = hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || net.isIP(host)) {
+    if (host === 'localhost' || isPrivateAddress(host)) throw new Error('private network sources are not allowed');
+    return;
+  }
+  const records = await dns.lookup(host, { all: true, verbatim: true });
+  if (!records.length || records.some(record => isPrivateAddress(record.address))) throw new Error('source resolves to a private network');
+}
 
 function normalizeUrl(value) {
   const url = new URL(String(value));
   if (!['https:', 'http:'].includes(url.protocol)) throw new Error('only HTTP(S) sources are supported');
   url.hash = '';
-  return url.toString();
+  return url;
 }
 
 export class ResearchEngine {
@@ -15,14 +39,18 @@ export class ResearchEngine {
     this.fetcher = options.fetcher || fetch;
     this.timeoutMs = options.timeoutMs ?? 10_000;
     this.maxBytes = options.maxBytes ?? 1_000_000;
+    this.allowHosts = options.allowHosts ? new Set(options.allowHosts.map(String)) : null;
   }
 
   async ingestUrl(input) {
-    const url = normalizeUrl(input?.url);
+    const parsed = normalizeUrl(input?.url);
+    if (this.allowHosts && !this.allowHosts.has(parsed.hostname)) throw new Error('source host is not allowlisted');
+    await assertPublicHost(parsed.hostname);
+    const url = parsed.toString();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetcher(url, { signal: controller.signal, headers: { accept: 'text/plain,text/markdown,text/html;q=0.8' } });
+      const response = await this.fetcher(url, { signal: controller.signal, redirect: 'error', headers: { accept: 'text/plain,text/markdown,text/html;q=0.8' } });
       if (!response.ok) throw new Error(`source returned HTTP ${response.status}`);
       const contentType = response.headers.get?.('content-type') || '';
       const body = await response.text();
