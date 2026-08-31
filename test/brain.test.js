@@ -30,6 +30,14 @@ test('blocks promotion when regressions exist and supports rollback', () => {
   const brain = new BrainStore();
   const skill = brain.proposeSkill({ name: 'test', definition: 'test' });
   assert.throws(() => brain.promoteSkill(skill.id, { passed: true, score: 0.95, regressionRate: 0.01 }), /regression/);
-  const rolled = brain.rollbackSkill(skill.id, 'benchmark regression detected');
+  const promoted = brain.promoteSkill(skill.id, { passed: true, score: 0.95, regressionRate: 0 });
+  const rolled = brain.rollbackSkill(promoted.id, 'benchmark regression detected');
   assert.equal(rolled.status, 'deprecated');
+});
+
+test('audit chain remains valid after mutations', () => {
+  const brain = new BrainStore();
+  const memory = brain.remember({ content: 'validated fact', source: 'test' });
+  brain.validateMemory(memory.id, { passed: true, confidence: 0.9 });
+  assert.equal(brain.verifyAudit(), true);
 });
