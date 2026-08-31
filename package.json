@@ -1,0 +1,13 @@
+{
+  "name": "omni-agent-brain",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Production foundation for a provenance-aware, evaluatable, self-improving agent brain.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test",
+    "lint": "node --check src/index.js && node --check src/brain.js",
+    "start": "node src/index.js"
+  }
+}
