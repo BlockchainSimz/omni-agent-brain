@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { JsonPersistence } from './persistence.js';
+import { JsonPersistence, assertPersistenceAdapter } from './persistence.js';
 import { retrieveMemories } from './retrieval.js';
 
 const STATUSES = new Set(['candidate', 'validated', 'promoted', 'rejected', 'deprecated']);
@@ -10,7 +10,7 @@ function sanitizeMetadata(value) { if (!value || typeof value !== 'object' || Ar
 
 export class BrainStore {
   constructor(persistence) {
-    this.persistence = persistence || (process.env.NODE_ENV === 'test' ? new MemoryPersistence() : new JsonPersistence());
+    this.persistence = assertPersistenceAdapter(persistence || (process.env.NODE_ENV === 'test' ? new MemoryPersistence() : new JsonPersistence()));
     const saved = this.persistence.load();
     this.memories = new Map((saved?.memories || []).map(x => [x.id, x]));
     this.skills = new Map((saved?.skills || []).map(x => [x.id, x]));
