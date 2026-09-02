@@ -14,6 +14,22 @@ test('rate limiter bounds requests per window', () => {
   assert.equal(limiter.check('client').allowed, false);
 });
 
+test('rate limiter bounds tracked clients and cleans expired entries', () => {
+  const limiter = new RateLimiter({ limit: 1, windowMs: 1000, maxEntries: 2 });
+  limiter.check('a');
+  limiter.check('b');
+  limiter.check('c');
+  assert.equal(limiter.entries.size, 2);
+  limiter.clearExpired(Date.now() + 1001);
+  assert.equal(limiter.entries.size, 0);
+});
+
+test('rate limiter validates operational configuration', () => {
+  assert.throws(() => new RateLimiter({ limit: 0 }), /invalid_rate_limit/);
+  assert.throws(() => new RateLimiter({ windowMs: 0 }), /invalid_rate_limit_window/);
+  assert.throws(() => new RateLimiter({ maxEntries: 0 }), /invalid_rate_limit_entries/);
+});
+
 test('idempotency reuses a successful in-flight operation', async () => {
   const store = new IdempotencyStore({ ttlMs: 1000 });
   let calls = 0;
@@ -33,6 +49,21 @@ test('idempotency removes failed operations so callers may retry', async () => {
   const store = new IdempotencyStore({ ttlMs: 1000 });
   await assert.rejects(() => store.run('abc', { value: 1 }, () => { throw new Error('temporary'); }), /temporary/);
   assert.equal(await store.run('abc', { value: 1 }, () => 'retry'), 'retry');
+});
+
+test('idempotency bounds entries and cleans expired entries', async () => {
+  const store = new IdempotencyStore({ ttlMs: 1000, maxEntries: 2 });
+  await store.run('a', { value: 1 }, () => 'a');
+  await store.run('b', { value: 1 }, () => 'b');
+  await store.run('c', { value: 1 }, () => 'c');
+  assert.equal(store.entries.size, 2);
+  store.clearExpired(Date.now() + 1001);
+  assert.equal(store.entries.size, 0);
+});
+
+test('idempotency validates operational configuration', () => {
+  assert.throws(() => new IdempotencyStore({ ttlMs: 0 }), /invalid_idempotency_ttl/);
+  assert.throws(() => new IdempotencyStore({ maxEntries: 0 }), /invalid_idempotency_entries/);
 });
 
 test('request context validates correlation ids and errors expose request id only', () => {
