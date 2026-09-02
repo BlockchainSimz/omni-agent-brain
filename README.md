@@ -4,7 +4,9 @@ A provenance-aware foundation for a self-improving AI agent brain.
 
 ## Current status
 
-**v0.2.0 production foundation** — the repository contains an executable core, hardened HTTP API, concurrency smoke testing, CI, provenance tracking, guarded skill promotion, rollback support, runtime observability, authentication, rate limiting, idempotency, and a production container definition. External learning/crawling and persistent database adapters remain planned integrations.
+**v0.2.0 production foundation — Phase 7 in progress.** The repository contains an executable core, hardened HTTP API, concurrency smoke testing, CI, provenance tracking, guarded skill promotion, rollback support, runtime observability, authentication, rate limiting, idempotency, production JSON persistence, and an optional PostgreSQL persistence adapter contract.
+
+The PostgreSQL adapter is deliberately **not wired into `BrainStore` yet** because `BrainStore` currently has synchronous persistence semantics while PostgreSQL I/O is asynchronous. Wiring it without first completing that boundary refactor would create partial persistence and unsafe failure behavior. The next Phase 7 slice is the async storage boundary and transactional integration.
 
 ## Production readiness
 
@@ -16,7 +18,7 @@ The current branch is suitable as a hardened service foundation, not as a comple
 - Configure `PORT` and rate/idempotency limits for the deployment size.
 - Treat `/health` as the container liveness check and `/ready` as the service readiness endpoint.
 - Do not rely on the in-memory rate limiter or idempotency store for correctness across multiple replicas; distributed deployments require a shared store.
-- Back up and validate any future persistent storage before enabling production data workloads.
+- Back up and validate persistent storage before enabling production data workloads.
 
 ## Architecture
 
@@ -29,7 +31,7 @@ External observations
         v
  Candidate skill ---> evaluation ---> promotion ---> versioning
                               |                         |
-                              +------ regression <------+ 
+                              +------ regression <------+
                                          |
                                       rollback
 ```
@@ -51,6 +53,8 @@ External observations
 - Concurrent HTTP load smoke test
 - Node.js test suite and GitHub Actions CI with dependency auditing
 - Non-root production Docker image with a container healthcheck
+- Production JSON persistence with schema validation and atomic writes
+- PostgreSQL persistence adapter with parameterized state writes, schema-version checks, identifier validation, and healthcheck
 - Security policy for untrusted external content and self-modification
 
 ## API
@@ -100,7 +104,7 @@ The image runs as the non-root `node` user and exposes a Docker healthcheck agai
 
 ## Evolution roadmap
 
-1. Persistent PostgreSQL storage and migrations
+1. ~~Persistent PostgreSQL storage and migrations~~ — adapter foundation added; async integration remains
 2. Vector/semantic retrieval layer
 3. Episodic, semantic, procedural and working-memory stores
 4. Source ingestion adapters for GitHub and approved knowledge sources
