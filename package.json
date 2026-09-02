@@ -7,6 +7,7 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "test": "node --test",
+    "test:load": "node --test test/load-smoke.test.js --test-timeout=30000",
     "lint": "node --check src/index.js && node --check src/brain.js",
     "start": "node src/index.js"
   }
