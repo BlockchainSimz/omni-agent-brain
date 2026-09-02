@@ -1,0 +1,18 @@
+{
+  "name": "omni-agent-brain",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Production foundation for a provenance-aware, evaluatable, self-improving agent brain.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "postgres": "3.4.9"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:load": "node --test --test-timeout=30000 test/load-smoke.test.js",
+    "test:postgres": "node --test test/postgres-integration.test.js",
+    "lint": "node --check src/index.js && node --check src/brain.js && node --check src/persistence.js && node --check src/postgres-persistence.js && node --check src/async-persistence.js && node --check src/async-brain.js && node --check src/postgres-runtime.js",
+    "start": "node src/index.js"
+  }
+}

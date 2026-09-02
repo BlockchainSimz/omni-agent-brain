@@ -1,52 +1,118 @@
-# Omni Agent Brain — Knowledge Repository
+# Omni Agent Brain
 
-> **The living, version-controlled brain of a self-evolving AI agent.**
-> Every file here is written and updated automatically by the agent as it learns.
+A provenance-aware foundation for a self-improving AI agent brain.
 
-[![Brain Version](https://img.shields.io/badge/brain-v0.1.0-orange)](#)
-[![Patterns Learned](https://img.shields.io/badge/patterns-12-blue)](#patterns)
+## Current status
 
----
+**v0.2.0 production foundation — Phase 7 in progress.** The repository contains an executable core, hardened HTTP API, concurrency smoke testing, CI, provenance tracking, guarded skill promotion, rollback support, runtime observability, authentication, rate limiting, idempotency, production JSON persistence, and an optional PostgreSQL persistence adapter contract.
 
-## What This Repo Does
+The PostgreSQL adapter is deliberately **not wired into `BrainStore` yet** because `BrainStore` currently has synchronous persistence semantics while PostgreSQL I/O is asynchronous. Wiring it without first completing that boundary refactor would create partial persistence and unsafe failure behavior. The next Phase 7 slice is the async storage boundary and transactional integration.
 
-This is the **persistent memory and capability store** for the Omni Agent Brain built on CodeWords. The agent:
+## Production readiness
 
-1. **Learns daily** — crawls trending GitHub repos and AI agent frameworks
-2. **Mimics** — extracts patterns from AutoGPT, CrewAI, LangGraph, Swarm
-3. **Synthesises** → weekly synthesis into improved prompts and capability upgrades
-4. **Commits** — every upgrade tracked here for full auditability
+The current branch is suitable as a hardened service foundation, not as a complete autonomous AI platform. Before exposing it to real traffic:
 
----
+- Set `NODE_ENV=production`.
+- Set a strong `OMNI_BRAIN_API_KEY` through the deployment secret manager; never commit it.
+- Put TLS and a trusted reverse proxy/load balancer in front of the service.
+- Configure `PORT` and rate/idempotency limits for the deployment size.
+- Treat `/health` as the container liveness check and `/ready` as the service readiness endpoint.
+- Do not rely on the in-memory rate limiter or idempotency store for correctness across multiple replicas; distributed deployments require a shared store.
+- Back up and validate persistent storage before enabling production data workloads.
 
-## Directory Structure
+## Architecture
 
+```text
+External observations
+        |
+        v
+  Provenance memory ---> validation ---> trusted knowledge
+        |
+        v
+ Candidate skill ---> evaluation ---> promotion ---> versioning
+                              |                         |
+                              +------ regression <------+
+                                         |
+                                      rollback
 ```
-omni-agent-brain/
-├── README.md                    # Auto-updated weekly
-├── prompts/                     # Agent system prompts (evolve over time)
-│   ├── system_prompt_base.md    # Core agent identity + capabilities
-│   ├── research_agent.md        # Deep research mode prompt
-│   ├── code_agent.md            # Code generation mode prompt
 
-## Agent Capabilities
+## Implemented
 
-| Mode | Model | Capability |
-|------|------|-----------|
-| `research` | Perplexity sonar-pro + Claude Opus 4.6 | Multi-source deep research |
-| `code` | Claude Opus 4.6 + adaptive thinking | Production-ready code, any language |
-| `present` | Claude Opus 4.6 | HTML + PPTX + PDF simultaneously |
-| `chat` | Claude Opus 4.6 + KB context | Knowledge-enriched AI conversation |
+- Candidate memory with source provenance and source hashing
+- Confidence and validation state
+- Audit events for memory and skill lifecycle changes
+- Candidate skill registry
+- Promotion gates: passing evaluation, score >= 0.8, zero regression rate
+- Explicit rollback/deprecation
+- Request-size limit and structured API errors
+- Authentication required in production
+- Request correlation IDs and runtime observability
+- Bounded rate-limit and idempotency state with expiry cleanup
+- HTTP request/header/keep-alive timeouts and graceful shutdown
+- Health and readiness endpoints
+- Concurrent HTTP load smoke test
+- Node.js test suite and GitHub Actions CI with dependency auditing
+- Non-root production Docker image with a container healthcheck
+- Production JSON persistence with schema validation and atomic writes
+- PostgreSQL persistence adapter with parameterized state writes, schema-version checks, identifier validation, and healthcheck
+- Security policy for untrusted external content and self-modification
 
-## Frameworks Studied
+## API
 
-| Framework | Key Insight Extracted |
-|-----------|------------------------|
-| **AutoGPT** | OODA loop, hierarchical task networks, self-critique |
-| **CrewAI** | Multi-agent roles, process architectures, memory types |
-| **LangGraph** | Stateful graphs, checkpointing, conditional branching |
-| **MemGPT** | Tiered memory: in-context → Airtable → GitHub |
+```text
+GET  /health
+GET  /ready
+GET  /v1/snapshot
+GET  /v1/memories/search
+GET  /v1/knowledge/conflicts
+GET  /v1/knowledge/consolidation
+POST /v1/memories
+POST /v1/memories/:id/validate
+POST /v1/knowledge
+POST /v1/knowledge/batch
+POST /v1/research/url
+POST /v1/research/batch
+POST /v1/skills
+POST /v1/skills/:id/promote
+POST /v1/skills/:id/rollback
+```
 
----
+## Development
 
-*Last auto-generated: 2026-05-14 | Brain version: 0.1.0*
+Requires Node.js 20+.
+
+```bash
+npm ci
+npm test
+npm run test:load
+npm run lint
+npm audit --audit-level=high
+npm start
+```
+
+## Production container
+
+```bash
+docker build --pull -t omni-agent-brain .
+docker run --rm -p 3000:3000 \
+  -e NODE_ENV=production \
+  -e OMNI_BRAIN_API_KEY='set-this-through-your-secret-manager' \
+  omni-agent-brain
+```
+
+The image runs as the non-root `node` user and exposes a Docker healthcheck against `/health`. Do not put secrets in the Dockerfile, image, repository, or command history in a shared environment.
+
+## Evolution roadmap
+
+1. ~~Persistent PostgreSQL storage and migrations~~ — adapter foundation added; async integration remains
+2. Vector/semantic retrieval layer
+3. Episodic, semantic, procedural and working-memory stores
+4. Source ingestion adapters for GitHub and approved knowledge sources
+5. Evaluation/benchmark service with reproducible datasets
+6. Sandboxed code/tool execution
+7. Model/provider abstraction and cost controls
+8. Distributed observability, rate limiting and idempotency
+9. Automated freshness/knowledge-decay jobs
+10. Human approval controls for high-impact capability changes
+
+See [`SECURITY.md`](SECURITY.md) for the self-modification and provenance policy.

@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: omni
+          POSTGRES_PASSWORD: omni
+          POSTGRES_DB: omni_brain
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U omni -d omni_brain"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      OMNI_BRAIN_DATABASE_URL: postgres://omni:omni@localhost:5432/omni_brain
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test -- --test-timeout=30000
+      - run: npm run test:load
+      - run: npm run test:postgres
+      - run: npm run lint
+      - run: npm audit --audit-level=high

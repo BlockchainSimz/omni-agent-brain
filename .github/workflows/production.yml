@@ -1,0 +1,22 @@
+name: Production build
+
+on:
+  push:
+    branches:
+      - fix/production-brain-v1
+  pull_request:
+
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production container
+        run: docker build --pull --tag omni-agent-brain:ci .
+      - name: Inspect image configuration
+        run: |
+          docker image inspect omni-agent-brain:ci --format '{{.Config.User}}' | grep -Fx node
+          docker image inspect omni-agent-brain:ci --format '{{json .Config.Healthcheck}}' | grep -F '/health'
