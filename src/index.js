@@ -1,6 +1,8 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { BrainStore } from './brain.js';
+import { AsyncBrainStore } from './async-brain.js';
+import { createPostgresPersistence, runPostgresMigration } from './postgres-runtime.js';
 import { LearningPipeline } from './learning.js';
 import { KnowledgeService } from './knowledge.js';
 import { ResearchEngine } from './research.js';
@@ -33,7 +35,19 @@ export function validateRuntimeConfig(env = process.env) {
 }
 
 const config = validateRuntimeConfig();
-const store = new BrainStore();
+const databaseUrl = process.env.OMNI_BRAIN_DATABASE_URL;
+let databaseRuntime = null;
+let store;
+
+if (databaseUrl) {
+  databaseRuntime = createPostgresPersistence({ url: databaseUrl });
+  await runPostgresMigration(databaseRuntime.persistence);
+  store = new AsyncBrainStore(databaseRuntime.persistence);
+  await store.ready;
+} else {
+  store = new BrainStore();
+}
+
 const learning = new LearningPipeline(store);
 const knowledge = new KnowledgeService(learning);
 const research = new ResearchEngine(knowledge, { allowHosts: process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST ? process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST.split(',').map(x => x.trim()).filter(Boolean) : undefined });
@@ -41,7 +55,7 @@ const port = config.port;
 const apiKey = process.env.OMNI_BRAIN_API_KEY || '';
 const limiter = new RateLimiter({ limit: config.rateLimit, windowMs: 60_000, maxEntries: config.rateLimitMaxEntries });
 const idempotency = new IdempotencyStore({ ttlMs: config.idempotencyTtlMs, maxEntries: config.idempotencyMaxEntries });
-const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true } });
+const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true, postgres: Boolean(databaseRuntime) } });
 let acceptingRequests = true;
 
 function json(res, status, body, requestId, idempotencyKey) { const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-request-id': requestId }; if (idempotencyKey) headers['idempotency-key'] = idempotencyKey; res.writeHead(status, headers); res.end(JSON.stringify(body)); }
@@ -64,6 +78,16 @@ async function body(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { throw new Error('invalid JSON body'); }
 }
 
+async function readiness() {
+  let postgres = true;
+  if (databaseRuntime) {
+    try { postgres = await databaseRuntime.persistence.healthcheck(); } catch { postgres = false; }
+  }
+  const health = observability.health();
+  const ready = health.ready && postgres;
+  return { ...health, status: ready ? 'ok' : 'degraded', ready, dependencies: { ...health.dependencies, postgres } };
+}
+
 const server = http.createServer(async (req, res) => {
   const context = createRequestContext(req.headers);
   const operation = observability.start({ correlationId: context.requestId });
@@ -71,7 +95,11 @@ const server = http.createServer(async (req, res) => {
   try {
     if (!acceptingRequests) return json(res, 503, { error: 'service_unavailable', requestId: context.requestId }, context.requestId);
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    if (req.method === 'GET' && (url.pathname === '/health' || url.pathname === '/ready')) return json(res, 200, observability.health(), context.requestId);
+    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, observability.health(), context.requestId);
+    if (req.method === 'GET' && url.pathname === '/ready') {
+      const health = await readiness();
+      return json(res, health.ready ? 200 : 503, health, context.requestId);
+    }
     if (!authorized(req)) return json(res, 401, { error: 'unauthorized', requestId: context.requestId }, context.requestId);
     const rate = limiter.check(req.socket.remoteAddress || 'unknown');
     if (!rate.allowed) return json(res, 429, { error: 'rate_limited', requestId: context.requestId }, context.requestId);
@@ -83,16 +111,16 @@ const server = http.createServer(async (req, res) => {
       if (!isWrite || !idempotencyKey) return operationFn();
       return idempotency.run(idempotencyKey, input, operationFn);
     };
-    if (req.method === 'GET' && url.pathname === '/v1/snapshot') return json(res, 200, store.snapshot(), context.requestId);
-    if (req.method === 'GET' && url.pathname === '/v1/memories/search') return json(res, 200, { results: store.searchMemories(url.searchParams.get('q') || '', { limit: url.searchParams.get('limit'), minScore: url.searchParams.get('minScore') }) }, context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/snapshot') return json(res, 200, await store.snapshot(), context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/memories/search') return json(res, 200, { results: await store.searchMemories(url.searchParams.get('q') || '', { limit: url.searchParams.get('limit'), minScore: url.searchParams.get('minScore') }) }, context.requestId);
     if (req.method === 'POST' && url.pathname === '/v1/memories') { const value = await readBody(); return json(res, 201, await runWrite(() => store.remember(validateRequest(value, { required: ['content'] }))), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/memories/') && url.pathname.endsWith('/validate')) { const value = await readBody(); return json(res, 200, await runWrite(() => store.validateMemory(url.pathname.split('/')[3], value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/knowledge') { const value = await readBody(); return json(res, 201, await runWrite(() => knowledge.ingestDocument(value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/knowledge/batch') { const value = await readBody(); return json(res, 201, await runWrite(() => knowledge.ingestBatch(value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/research/url') { const value = await readBody(); return json(res, 201, await runWrite(() => research.ingestUrl(value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/research/batch') { const value = await readBody(); return json(res, 201, await runWrite(() => research.ingestUrls(value)), context.requestId, idempotencyKey); }
-    if (req.method === 'GET' && url.pathname === '/v1/knowledge/conflicts') return json(res, 200, { conflicts: detectConflicts(store.snapshot().memories) }, context.requestId);
-    if (req.method === 'GET' && url.pathname === '/v1/knowledge/consolidation') return json(res, 200, consolidate(store.snapshot().memories), context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/knowledge/conflicts') return json(res, 200, { conflicts: detectConflicts((await store.snapshot()).memories) }, context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/knowledge/consolidation') return json(res, 200, consolidate((await store.snapshot()).memories), context.requestId);
     if (req.method === 'POST' && url.pathname === '/v1/skills') { const value = await readBody(); return json(res, 201, await runWrite(() => store.proposeSkill(value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/promote')) { const value = await readBody(); return json(res, 200, await runWrite(() => store.promoteSkill(url.pathname.split('/')[3], value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/rollback')) { const value = await readBody(); return json(res, 200, await runWrite(() => store.rollbackSkill(url.pathname.split('/')[3], value.reason)), context.requestId, idempotencyKey); }
@@ -114,10 +142,20 @@ const shutdown = () => {
   if (!acceptingRequests) return;
   acceptingRequests = false;
   clearInterval(cleanup);
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 10_000).unref();
+  const forceExit = setTimeout(() => process.exit(1), 10_000);
+  forceExit.unref();
+  server.close(async () => {
+    try {
+      if (databaseRuntime) await databaseRuntime.close();
+      clearTimeout(forceExit);
+      process.exit(0);
+    } catch {
+      clearTimeout(forceExit);
+      process.exit(1);
+    }
+  });
 };
 process.once('SIGTERM', shutdown);
 process.once('SIGINT', shutdown);
 if (process.env.NODE_ENV !== 'test') server.listen(port, () => console.log(`Omni Agent Brain listening on ${port}`));
-export { server, store, research, knowledge, learning, limiter, idempotency, observability };
+export { server, store, research, knowledge, learning, limiter, idempotency, observability, databaseRuntime, readiness };
