@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 
 process.env.NODE_ENV = 'production';
+process.env.PORT = '0';
 delete process.env.OMNI_BRAIN_API_KEY;
 
 const request = (server, { method = 'GET', path = '/health', headers = {}, body } = {}) => new Promise((resolve, reject) => {
@@ -22,10 +23,6 @@ const request = (server, { method = 'GET', path = '/health', headers = {}, body 
   req.end();
 });
 
-async function listen(server) {
-  await new Promise((resolve, reject) => { const onError = error => reject(error); server.once('error', onError); server.listen(0, '127.0.0.1', () => { server.off('error', onError); resolve(); }); });
-}
-
 async function close(server) {
   if (!server.listening) return;
   server.closeAllConnections?.();
@@ -34,7 +31,6 @@ async function close(server) {
 
 test('hardened service exposes health and request correlation', async () => {
   const { server } = await import('../src/index.js');
-  await listen(server);
   try {
     const response = await request(server, { headers: { 'x-request-id': 'integration-1' } });
     assert.equal(response.status, 200);
@@ -45,7 +41,11 @@ test('hardened service exposes health and request correlation', async () => {
 
 test('protected endpoint rejects unauthorized access', async () => {
   const { server } = await import('../src/index.js');
-  await listen(server);
+  // The service was closed by the previous test; start it on an ephemeral port for this test.
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve(); });
+  });
   try {
     const response = await request(server, { path: '/v1/snapshot' });
     assert.equal(response.status, 401);
