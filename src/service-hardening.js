@@ -15,19 +15,49 @@ export class RateLimiter {
     if (!key) throw new Error('rate_limit_key_required');
     const now = Date.now();
     const entry = this.entries.get(key);
-    if (!entry || now >= entry.resetAt) { this.entries.set(key, { count: 1, resetAt: now + this.windowMs }); return { allowed: true, remaining: this.limit - 1, resetAt: now + this.windowMs }; }
+    if (!entry || now >= entry.resetAt) { this.entries.set(key, { count: 1, resetAt: now + this.windowMs }); return { allowed: true, remaining: Math.max(0, this.limit - 1), resetAt: now + this.windowMs }; }
     if (entry.count >= this.limit) return { allowed: false, remaining: 0, resetAt: entry.resetAt };
     entry.count += 1;
     return { allowed: true, remaining: this.limit - entry.count, resetAt: entry.resetAt };
   }
 }
 
+export class IdempotencyStore {
+  constructor({ ttlMs = 10 * 60_000, maxEntries = 10_000 } = {}) { this.ttlMs = ttlMs; this.maxEntries = maxEntries; this.entries = new Map(); }
+  async run(key, payload, operation) {
+    if (!key || !/^[A-Za-z0-9._:-]{1,128}$/.test(key)) throw new Error('invalid_idempotency_key');
+    const fingerprint = crypto.createHash('sha256').update(JSON.stringify(payload ?? null)).digest('hex');
+    const now = Date.now();
+    const existing = this.entries.get(key);
+    if (existing && now < existing.expiresAt) {
+      if (existing.fingerprint !== fingerprint) { const error = new Error('idempotency_key_reused'); error.statusCode = 409; throw error; }
+      return existing.promise;
+    }
+    if (existing) this.entries.delete(key);
+    const promise = Promise.resolve().then(operation).then(result => {
+      const current = this.entries.get(key);
+      if (current?.promise === promise) current.result = result;
+      return result;
+    }).catch(error => {
+      const current = this.entries.get(key);
+      if (current?.promise === promise) this.entries.delete(key);
+      throw error;
+    });
+    this.entries.set(key, { fingerprint, promise, expiresAt: now + this.ttlMs });
+    while (this.entries.size > this.maxEntries) this.entries.delete(this.entries.keys().next().value);
+    return promise;
+  }
+  clearExpired(now = Date.now()) { for (const [key, entry] of this.entries) if (entry.expiresAt <= now) this.entries.delete(key); }
+}
+
 export function createRequestContext(headers = {}) {
-  return { requestId: headers['x-request-id'] || crypto.randomUUID(), receivedAt: new Date().toISOString() };
+  const supplied = headers['x-request-id'];
+  const requestId = typeof supplied === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(supplied) ? supplied : crypto.randomUUID();
+  return { requestId, receivedAt: new Date().toISOString() };
 }
 
 export function errorResponse(error, requestId) {
   const message = error?.message || 'internal_error';
-  const status = message.startsWith('missing_required_field') || message === 'request_too_large' ? 400 : message === 'rate_limited' ? 429 : 500;
+  const status = error?.statusCode || (message.startsWith('missing_required_field') || message === 'request_too_large' || message === 'invalid_idempotency_key' ? 400 : message === 'rate_limited' ? 429 : 500);
   return { status, body: { error: status === 500 ? 'internal_error' : message, requestId } };
 }
