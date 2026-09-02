@@ -35,18 +35,28 @@ test('serializes concurrent writes without losing audit entries', async () => {
   assert.equal(await brain.verifyAudit(), true);
 });
 
-test('propagates persistence failures without poisoning later writes', async () => {
+test('rolls back in-memory state when persistence fails and permits a later write', async () => {
   let fail = true;
   const persistence = {
     snapshot: null,
+    saves: 0,
     async load() { return this.snapshot; },
     async save(snapshot) {
+      this.saves += 1;
       if (fail) { fail = false; throw new Error('db unavailable'); }
       this.snapshot = structuredClone(snapshot);
     }
   };
   const brain = new AsyncBrainStore(persistence);
-  await assert.rejects(() => brain.remember({ content: 'first', source: 'test' }), /db unavailable/);
-  await brain.remember({ content: 'second', source: 'test' });
-  assert.equal((await brain.snapshot()).memories.length, 2);
+  await assert.rejects(() => brain.remember({ content: 'failed write', source: 'test' }), /db unavailable/);
+  assert.equal((await brain.snapshot()).memories.length, 0);
+  assert.equal((await brain.snapshot()).audit.length, 0);
+
+  const memory = await brain.remember({ content: 'successful write', source: 'test' });
+  const snapshot = await brain.snapshot();
+  assert.equal(snapshot.memories.length, 1);
+  assert.equal(snapshot.memories[0].id, memory.id);
+  assert.equal(snapshot.audit.length, 1);
+  assert.equal(await brain.verifyAudit(), true);
+  assert.equal(persistence.saves, 2);
 });
