@@ -36,11 +36,12 @@ export function validateRuntimeConfig(env = process.env) {
 
 const config = validateRuntimeConfig();
 const databaseUrl = process.env.OMNI_BRAIN_DATABASE_URL;
+const databaseTable = process.env.OMNI_BRAIN_DATABASE_TABLE || 'omni_brain_state';
 let databaseRuntime = null;
 let store;
 
 if (databaseUrl) {
-  databaseRuntime = createPostgresPersistence({ url: databaseUrl });
+  databaseRuntime = createPostgresPersistence({ url: databaseUrl, table: databaseTable });
   await runPostgresMigration(databaseRuntime.persistence);
   store = new AsyncBrainStore(databaseRuntime.persistence);
   await store.ready;
