@@ -6,8 +6,10 @@ const hasDatabase = Boolean(process.env.OMNI_BRAIN_DATABASE_URL);
 
 test('HTTP runtime persists through PostgreSQL and reports readiness', { skip: !hasDatabase }, async () => {
   process.env.NODE_ENV = 'test';
+  process.env.OMNI_BRAIN_DATABASE_TABLE = `omni_brain_http_${process.pid}`;
   const { server, store, databaseRuntime } = await import('../src/index.js');
-  await databaseRuntime.persistence.pool.query('DELETE FROM omni_brain_state WHERE id = 1');
+  const table = process.env.OMNI_BRAIN_DATABASE_TABLE;
+
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, resolve);
@@ -35,6 +37,31 @@ test('HTTP runtime persists through PostgreSQL and reports readiness', { skip: !
     assert.equal(ready.body.ready, true);
     assert.equal(ready.body.dependencies.postgres, true);
 
+    const healthy = await request('GET', '/health');
+    assert.equal(healthy.status, 200);
+    assert.equal(healthy.body.status, 'ok');
+
+    const originalHealthcheck = databaseRuntime.persistence.healthcheck;
+    databaseRuntime.persistence.healthcheck = async () => { throw new Error('simulated_connection_loss'); };
+    try {
+      const degraded = await request('GET', '/ready');
+      assert.equal(degraded.status, 503);
+      assert.equal(degraded.body.ready, false);
+      assert.equal(degraded.body.status, 'degraded');
+      assert.equal(degraded.body.dependencies.postgres, false);
+
+      const stillLive = await request('GET', '/health');
+      assert.equal(stillLive.status, 200);
+      assert.equal(stillLive.body.status, 'ok');
+    } finally {
+      databaseRuntime.persistence.healthcheck = originalHealthcheck;
+    }
+
+    const recovered = await request('GET', '/ready');
+    assert.equal(recovered.status, 200);
+    assert.equal(recovered.body.ready, true);
+    assert.equal(recovered.body.dependencies.postgres, true);
+
     const created = await request('POST', '/v1/memories', { content: 'http postgres fact', source: 'http-integration' });
     assert.equal(created.status, 201);
     assert.equal(created.body.content, 'http postgres fact');
@@ -46,8 +73,8 @@ test('HTTP runtime persists through PostgreSQL and reports readiness', { skip: !
     const persisted = await store.snapshot();
     assert.equal(persisted.memories[0].id, created.body.id);
   } finally {
-    await databaseRuntime.persistence.pool.query('DELETE FROM omni_brain_state WHERE id = 1').catch(() => {});
     await new Promise(resolve => server.close(resolve));
+    await databaseRuntime.persistence.pool.query(`DROP TABLE IF EXISTS ${table}`).catch(() => {});
     await databaseRuntime.close();
   }
 });
