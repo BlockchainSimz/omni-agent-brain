@@ -35,7 +35,7 @@ test('saves and reloads a validated PostgreSQL snapshot', async () => {
   const persistence = new PostgresPersistence({ pool });
   const snapshot = { memories: [{ id: 'm1' }], skills: [], executions: [], audit: [] };
   await persistence.save(snapshot);
-  assert.deepEqual(await persistence.load(), { schemaVersion: 1, ...snapshot });
+  assert.deepEqual(await persistence.load(), snapshot);
   const call = pool.calls.find(x => x.text.startsWith('INSERT INTO'));
   assert.match(call.text, /ON CONFLICT \(id\)/);
   assert.equal(call.params[0], 1);
