@@ -16,5 +16,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test -- --test-timeout=30000
+      - run: npm run test:load
       - run: npm run lint
       - run: npm audit --audit-level=high
