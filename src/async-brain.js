@@ -20,12 +20,24 @@ export class AsyncBrainStore {
   async #write(operation) {
     await this.ready;
     const run = this.writeQueue.then(async () => {
-      const result = await operation(this.brain);
-      await this.persistence.save(this.brain.snapshot());
-      return result;
+      const before = this.brain.snapshot();
+      try {
+        const result = await operation(this.brain);
+        await this.persistence.save(this.brain.snapshot());
+        return result;
+      } catch (error) {
+        this.#restore(before);
+        throw error;
+      }
     });
     this.writeQueue = run.catch(() => {});
     return run;
+  }
+
+  #restore(snapshot) {
+    const memory = new MemoryPersistence();
+    memory.save(snapshot);
+    this.brain = new BrainStore(memory);
   }
 
   async remember(input) { return this.#write(brain => brain.remember(input)); }
