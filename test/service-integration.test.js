@@ -23,6 +23,13 @@ const request = (server, { method = 'GET', path = '/health', headers = {}, body 
   req.end();
 });
 
+async function listen(server) {
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve(); });
+  });
+}
+
 async function close(server) {
   if (!server.listening) return;
   server.closeAllConnections?.();
@@ -31,7 +38,7 @@ async function close(server) {
 
 test('hardened service exposes health and request correlation', async () => {
   const { server } = await import('../src/index.js');
-  await new Promise((resolve, reject) => server.listen(0, '127.0.0.1', resolve).once?.('error', reject));
+  await listen(server);
   try {
     const response = await request(server, { headers: { 'x-request-id': 'integration-1' } });
     assert.equal(response.status, 200);
@@ -42,10 +49,7 @@ test('hardened service exposes health and request correlation', async () => {
 
 test('protected endpoint rejects unauthorized access', async () => {
   const { server } = await import('../src/index.js');
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve(); });
-  });
+  await listen(server);
   try {
     process.env.NODE_ENV = 'production';
     const response = await request(server, { path: '/v1/snapshot' });
