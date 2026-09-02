@@ -14,7 +14,7 @@ const knowledge = new KnowledgeService(learning);
 const research = new ResearchEngine(knowledge, { allowHosts: process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST ? process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST.split(',').map(x => x.trim()).filter(Boolean) : undefined });
 const port = Number(process.env.PORT || 3000);
 const apiKey = process.env.OMNI_BRAIN_API_KEY || '';
-const limiter = new RateLimiter({ limit: Number(process.env.OMNI_BRAIN_RATE_LIMIT || 60), windowMs: 60_000 });
+const limiter = new RateLimiter({ limit: Number(process.env.OMNI_BRAIN_RATE_LIMIT || 60), windowMs: 60_000, maxEntries: Number(process.env.OMNI_BRAIN_RATE_LIMIT_MAX_ENTRIES || 10_000) });
 const idempotency = new IdempotencyStore({ ttlMs: Number(process.env.OMNI_BRAIN_IDEMPOTENCY_TTL_MS || 10 * 60_000), maxEntries: Number(process.env.OMNI_BRAIN_IDEMPOTENCY_MAX_ENTRIES || 10_000) });
 const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true } });
 let acceptingRequests = true;
@@ -68,7 +68,20 @@ const server = http.createServer(async (req, res) => {
   } finally { observability.complete(operation, { status: res.statusCode >= 500 ? 'error' : 'success' }); }
 });
 
-const shutdown = () => { acceptingRequests = false; server.close(() => process.exit(0)); setTimeout(() => process.exit(1), 10_000).unref(); };
+server.requestTimeout = 30_000;
+server.headersTimeout = 10_000;
+server.keepAliveTimeout = 5_000;
+
+const cleanup = setInterval(() => { limiter.clearExpired(); idempotency.clearExpired(); }, 60_000);
+cleanup.unref();
+
+const shutdown = () => {
+  if (!acceptingRequests) return;
+  acceptingRequests = false;
+  clearInterval(cleanup);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10_000).unref();
+};
 process.once('SIGTERM', shutdown);
 process.once('SIGINT', shutdown);
 if (process.env.NODE_ENV !== 'test') server.listen(port, () => console.log(`Omni Agent Brain listening on ${port}`));
