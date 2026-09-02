@@ -1,4 +1,4 @@
-import { validateSnapshot, PERSISTENCE_SCHEMA_VERSION } from './persistence.js';
+import { validateSnapshot } from './persistence.js';
 
 export function assertAsyncPersistenceAdapter(persistence) {
   if (!persistence || typeof persistence.load !== 'function' || typeof persistence.save !== 'function') throw new Error('invalid_persistence_adapter');
@@ -15,7 +15,7 @@ export class AsyncPersistenceAdapter {
   }
   async save(snapshot) {
     const value = validateSnapshot(snapshot);
-    await this.adapter.save({ schemaVersion: PERSISTENCE_SCHEMA_VERSION, ...value });
+    await this.adapter.save(value);
   }
   async healthcheck() {
     if (typeof this.adapter.healthcheck !== 'function') return true;
