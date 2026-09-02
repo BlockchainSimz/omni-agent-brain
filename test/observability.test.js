@@ -10,6 +10,20 @@ test('metrics aggregate counters and timings', () => {
   assert.equal(snapshot.timings.latency.avg, 15);
 });
 
+test('metrics bound timing samples under sustained load', () => {
+  const metrics = new Metrics({ maxTimingSamples: 3 });
+  metrics.observe('latency', 10); metrics.observe('latency', 20); metrics.observe('latency', 30); metrics.observe('latency', 40);
+  const snapshot = metrics.snapshot();
+  assert.equal(snapshot.timings.latency.count, 3);
+  assert.equal(snapshot.timings.latency.min, 20);
+  assert.equal(snapshot.timings.latency.max, 40);
+  assert.equal(snapshot.timings.latency.avg, 30);
+});
+
+test('metrics validate timing sample limits', () => {
+  assert.throws(() => new Metrics({ maxTimingSamples: 0 }), /invalid_metric_samples/);
+});
+
 test('logger emits correlation id and structured context', () => {
   const events = []; const logger = new StructuredLogger({ sink: { log: value => events.push(JSON.parse(value)) } });
   const event = logger.log('info', 'decision completed', { correlationId: 'c1', decisionId: 'd1' });
