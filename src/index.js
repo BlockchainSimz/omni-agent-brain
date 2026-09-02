@@ -8,14 +8,39 @@ import { consolidate, detectConflicts } from './consolidation.js';
 import { validateRequest, RateLimiter, IdempotencyStore, createRequestContext, errorResponse } from './service-hardening.js';
 import { RuntimeObservability } from './runtime-observability.js';
 
+function readNumber(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new Error(`invalid_${name.toLowerCase()}`);
+  return value;
+}
+
+export function validateRuntimeConfig(env = process.env) {
+  const runtimeEnv = env.NODE_ENV || 'development';
+  const port = Number(env.PORT || 3000);
+  const rateLimit = Number(env.OMNI_BRAIN_RATE_LIMIT || 60);
+  const rateLimitMaxEntries = Number(env.OMNI_BRAIN_RATE_LIMIT_MAX_ENTRIES || 10_000);
+  const idempotencyTtlMs = Number(env.OMNI_BRAIN_IDEMPOTENCY_TTL_MS || 10 * 60_000);
+  const idempotencyMaxEntries = Number(env.OMNI_BRAIN_IDEMPOTENCY_MAX_ENTRIES || 10_000);
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new Error('invalid_port');
+  if (!Number.isInteger(rateLimit) || rateLimit < 1) throw new Error('invalid_rate_limit');
+  if (!Number.isInteger(rateLimitMaxEntries) || rateLimitMaxEntries < 1) throw new Error('invalid_rate_limit_entries');
+  if (!Number.isFinite(idempotencyTtlMs) || idempotencyTtlMs < 1) throw new Error('invalid_idempotency_ttl');
+  if (!Number.isInteger(idempotencyMaxEntries) || idempotencyMaxEntries < 1) throw new Error('invalid_idempotency_entries');
+  if (runtimeEnv === 'production' && !env.OMNI_BRAIN_API_KEY) throw new Error('missing_production_api_key');
+  return { port, rateLimit, rateLimitMaxEntries, idempotencyTtlMs, idempotencyMaxEntries };
+}
+
+const config = validateRuntimeConfig();
 const store = new BrainStore();
 const learning = new LearningPipeline(store);
 const knowledge = new KnowledgeService(learning);
 const research = new ResearchEngine(knowledge, { allowHosts: process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST ? process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST.split(',').map(x => x.trim()).filter(Boolean) : undefined });
-const port = Number(process.env.PORT || 3000);
+const port = config.port;
 const apiKey = process.env.OMNI_BRAIN_API_KEY || '';
-const limiter = new RateLimiter({ limit: Number(process.env.OMNI_BRAIN_RATE_LIMIT || 60), windowMs: 60_000, maxEntries: Number(process.env.OMNI_BRAIN_RATE_LIMIT_MAX_ENTRIES || 10_000) });
-const idempotency = new IdempotencyStore({ ttlMs: Number(process.env.OMNI_BRAIN_IDEMPOTENCY_TTL_MS || 10 * 60_000), maxEntries: Number(process.env.OMNI_BRAIN_IDEMPOTENCY_MAX_ENTRIES || 10_000) });
+const limiter = new RateLimiter({ limit: config.rateLimit, windowMs: 60_000, maxEntries: config.rateLimitMaxEntries });
+const idempotency = new IdempotencyStore({ ttlMs: config.idempotencyTtlMs, maxEntries: config.idempotencyMaxEntries });
 const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true } });
 let acceptingRequests = true;
 
@@ -26,7 +51,18 @@ function authorized(req) {
   if (!supplied || supplied.length !== apiKey.length) return false;
   return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(apiKey));
 }
-async function body(req) { const chunks = []; let size = 0; for await (const chunk of req) { size += chunk.length; if (size > 64 * 1024) throw new Error('request_too_large'); chunks.push(chunk); } try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { throw new Error('invalid JSON body'); } }
+async function body(req) {
+  const declaredLength = Number(req.headers['content-length']);
+  if (Number.isFinite(declaredLength) && declaredLength > 64 * 1024) throw new Error('request_too_large');
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 64 * 1024) throw new Error('request_too_large');
+    chunks.push(chunk);
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { throw new Error('invalid JSON body'); }
+}
 
 const server = http.createServer(async (req, res) => {
   const context = createRequestContext(req.headers);
@@ -63,8 +99,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, 404, { error: 'not_found', requestId: context.requestId }, context.requestId);
   } catch (error) {
     const response = errorResponse(error, context.requestId);
-    const safe = response.status === 500 ? response : { ...response, body: { ...response.body, error: response.body.error === 'request_too_large' ? 'request_too_large' : response.body.error } };
-    return json(res, safe.status, safe.body, context.requestId, idempotencyKey);
+    return json(res, response.status, response.body, context.requestId, idempotencyKey);
   } finally { observability.complete(operation, { status: res.statusCode >= 500 ? 'error' : 'success' }); }
 });
 
