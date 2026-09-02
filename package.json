@@ -8,7 +8,7 @@
   "scripts": {
     "test": "node --test",
     "test:load": "node --test --test-timeout=30000 test/load-smoke.test.js",
-    "lint": "node --check src/index.js && node --check src/brain.js",
+    "lint": "node --check src/index.js && node --check src/brain.js && node --check src/persistence.js && node --check src/postgres-persistence.js",
     "start": "node src/index.js"
   }
 }
