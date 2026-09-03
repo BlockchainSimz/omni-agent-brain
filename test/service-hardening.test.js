@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateRequest, RateLimiter, IdempotencyStore, createRequestContext, errorResponse } from '../src/service-hardening.js';
+import { validateHttpRequest, validateRequest, RateLimiter, IdempotencyStore, createRequestContext, errorResponse } from '../src/service-hardening.js';
+
+test('HTTP validation permits supported methods and JSON writes', () => {
+  assert.equal(validateHttpRequest({ method: 'GET', headers: {} }), true);
+  assert.equal(validateHttpRequest({ method: 'POST', headers: { 'content-type': 'application/json' } }), true);
+  assert.equal(validateHttpRequest({ method: 'POST', headers: { 'content-type': 'application/json; charset=utf-8' } }), true);
+});
+
+test('HTTP validation rejects unsupported methods and media types', () => {
+  assert.throws(() => validateHttpRequest({ method: 'PUT', headers: {} }), error => error.statusCode === 405 && error.message === 'method_not_allowed');
+  assert.throws(() => validateHttpRequest({ method: 'OPTIONS', headers: {} }), error => error.statusCode === 405 && error.message === 'method_not_allowed');
+  assert.throws(() => validateHttpRequest({ method: 'POST', headers: {} }), error => error.statusCode === 415 && error.message === 'unsupported_media_type');
+  assert.throws(() => validateHttpRequest({ method: 'POST', headers: { 'content-type': 'text/plain' } }), error => error.statusCode === 415 && error.message === 'unsupported_media_type');
+});
 
 test('request validation rejects missing and oversized payloads', () => {
   assert.throws(() => validateRequest({}, { required: ['input'] }), /missing_required_field/);
