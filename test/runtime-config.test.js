@@ -1,9 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-
-process.env.NODE_ENV = 'test';
-
-const { validateRuntimeConfig } = await import('../src/index.js');
+import { validateRuntimeConfig } from '../src/runtime-config.js';
 
 const base = {
   NODE_ENV: 'development',
