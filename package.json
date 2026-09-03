@@ -11,8 +11,8 @@
   "scripts": {
     "test": "node --test",
     "test:load": "node --test --test-timeout=30000 test/load-smoke.test.js",
-    "test:postgres": "node --test test/postgres-integration.test.js",
-    "lint": "node --check src/index.js && node --check src/brain.js && node --check src/persistence.js && node --check src/postgres-persistence.js && node --check src/async-persistence.js && node --check src/async-brain.js && node --check src/postgres-runtime.js && node --check src/runtime-config.js && node --check src/service-hardening.js",
+    "test:postgres": "node --test test/postgres-integration.test.js test/postgres-rate-limit.test.js",
+    "lint": "node --check src/index.js && node --check src/brain.js && node --check src/persistence.js && node --check src/postgres-persistence.js && node --check src/async-persistence.js && node --check src/async-brain.js && node --check src/postgres-runtime.js && node --check src/runtime-config.js && node --check src/service-hardening.js && node --check src/distributed-limiter.js && node --check src/postgres-rate-limit.js",
     "start": "node src/index.js"
   }
 }
