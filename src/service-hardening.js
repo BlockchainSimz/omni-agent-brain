@@ -1,5 +1,22 @@
 import crypto from 'node:crypto';
 
+export function validateHttpRequest({ method, headers = {} } = {}) {
+  if (!['GET', 'POST'].includes(method)) {
+    const error = new Error('method_not_allowed');
+    error.statusCode = 405;
+    throw error;
+  }
+  if (method === 'POST') {
+    const contentType = String(headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+    if (contentType !== 'application/json') {
+      const error = new Error('unsupported_media_type');
+      error.statusCode = 415;
+      throw error;
+    }
+  }
+  return true;
+}
+
 export function validateRequest(body, { required = [], maxBytes = 64 * 1024 } = {}) {
   const value = body ?? {};
   if (JSON.stringify(value).length > maxBytes) throw new Error('request_too_large');
