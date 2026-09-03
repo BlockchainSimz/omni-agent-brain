@@ -7,16 +7,10 @@ import { LearningPipeline } from './learning.js';
 import { KnowledgeService } from './knowledge.js';
 import { ResearchEngine } from './research.js';
 import { consolidate, detectConflicts } from './consolidation.js';
-import { validateRequest, RateLimiter, IdempotencyStore, createRequestContext, errorResponse } from './service-hardening.js';
+import { validateRequest, validateHttpRequest, RateLimiter, IdempotencyStore, createRequestContext, errorResponse } from './service-hardening.js';
 import { RuntimeObservability } from './runtime-observability.js';
 
-function readNumber(name, fallback) {
-  const raw = process.env[name];
-  if (raw === undefined || raw === '') return fallback;
-  const value = Number(raw);
-  if (!Number.isFinite(value)) throw new Error(`invalid_${name.toLowerCase()}`);
-  return value;
-}
+const DATABASE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 
 export function validateRuntimeConfig(env = process.env) {
   const runtimeEnv = env.NODE_ENV || 'development';
@@ -25,18 +19,21 @@ export function validateRuntimeConfig(env = process.env) {
   const rateLimitMaxEntries = Number(env.OMNI_BRAIN_RATE_LIMIT_MAX_ENTRIES || 10_000);
   const idempotencyTtlMs = Number(env.OMNI_BRAIN_IDEMPOTENCY_TTL_MS || 10 * 60_000);
   const idempotencyMaxEntries = Number(env.OMNI_BRAIN_IDEMPOTENCY_MAX_ENTRIES || 10_000);
+  const databaseTable = env.OMNI_BRAIN_DATABASE_TABLE || 'omni_brain_state';
   if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new Error('invalid_port');
   if (!Number.isInteger(rateLimit) || rateLimit < 1) throw new Error('invalid_rate_limit');
   if (!Number.isInteger(rateLimitMaxEntries) || rateLimitMaxEntries < 1) throw new Error('invalid_rate_limit_entries');
   if (!Number.isFinite(idempotencyTtlMs) || idempotencyTtlMs < 1) throw new Error('invalid_idempotency_ttl');
   if (!Number.isInteger(idempotencyMaxEntries) || idempotencyMaxEntries < 1) throw new Error('invalid_idempotency_entries');
+  if (!DATABASE_IDENTIFIER.test(databaseTable)) throw new Error('invalid_postgres_table');
   if (runtimeEnv === 'production' && !env.OMNI_BRAIN_API_KEY) throw new Error('missing_production_api_key');
-  return { port, rateLimit, rateLimitMaxEntries, idempotencyTtlMs, idempotencyMaxEntries };
+  if (runtimeEnv === 'production' && !env.OMNI_BRAIN_DATABASE_URL) throw new Error('missing_production_database_url');
+  return { port, rateLimit, rateLimitMaxEntries, idempotencyTtlMs, idempotencyMaxEntries, databaseTable };
 }
 
 const config = validateRuntimeConfig();
 const databaseUrl = process.env.OMNI_BRAIN_DATABASE_URL;
-const databaseTable = process.env.OMNI_BRAIN_DATABASE_TABLE || 'omni_brain_state';
+const databaseTable = config.databaseTable;
 let databaseRuntime = null;
 let store;
 
@@ -59,13 +56,29 @@ const idempotency = new IdempotencyStore({ ttlMs: config.idempotencyTtlMs, maxEn
 const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true, postgres: Boolean(databaseRuntime) } });
 let acceptingRequests = true;
 
-function json(res, status, body, requestId, idempotencyKey) { const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-request-id': requestId }; if (idempotencyKey) headers['idempotency-key'] = idempotencyKey; res.writeHead(status, headers); res.end(JSON.stringify(body)); }
+function json(res, status, body, requestId, idempotencyKey) {
+  const headers = {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+    'referrer-policy': 'no-referrer',
+    'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
+    'permissions-policy': 'camera=(), geolocation=(), microphone=()',
+    'x-request-id': requestId
+  };
+  if (idempotencyKey) headers['idempotency-key'] = idempotencyKey;
+  res.writeHead(status, headers);
+  res.end(JSON.stringify(body));
+}
+
 function authorized(req) {
   if (!apiKey) return process.env.NODE_ENV !== 'production';
   const supplied = req.headers.authorization?.replace(/^Bearer\s+/i, '') || req.headers['x-api-key'];
   if (!supplied || supplied.length !== apiKey.length) return false;
   return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(apiKey));
 }
+
 async function body(req) {
   const declaredLength = Number(req.headers['content-length']);
   if (Number.isFinite(declaredLength) && declaredLength > 64 * 1024) throw new Error('request_too_large');
@@ -95,7 +108,8 @@ const server = http.createServer(async (req, res) => {
   let idempotencyKey;
   try {
     if (!acceptingRequests) return json(res, 503, { error: 'service_unavailable', requestId: context.requestId }, context.requestId);
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    validateHttpRequest(req);
+    const url = new URL(req.url, 'http://localhost');
     if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, observability.health(), context.requestId);
     if (req.method === 'GET' && url.pathname === '/ready') {
       const health = await readiness();
@@ -135,6 +149,8 @@ const server = http.createServer(async (req, res) => {
 server.requestTimeout = 30_000;
 server.headersTimeout = 10_000;
 server.keepAliveTimeout = 5_000;
+server.maxHeadersCount = 50;
+server.maxRequestsPerSocket = 1000;
 
 const cleanup = setInterval(() => { limiter.clearExpired(); idempotency.clearExpired(); }, 60_000);
 cleanup.unref();
