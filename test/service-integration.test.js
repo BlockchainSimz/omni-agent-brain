@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { validateRuntimeConfig } from '../src/runtime-config.js';
 
 process.env.NODE_ENV = 'test';
 process.env.PORT = '0';
@@ -55,17 +56,16 @@ test('protected endpoint rejects unauthorized access', async () => {
     const response = await request(server, { path: '/v1/snapshot' });
     assert.equal(response.status, 401);
     assert.equal(response.body.error, 'unauthorized');
-  } finally { await close(server); }
+  } finally { process.env.NODE_ENV = 'test'; await close(server); }
 });
 
-test('runtime config requires an API key in production', async () => {
-  const { validateRuntimeConfig } = await import('../src/index.js');
+test('runtime config requires an API key and PostgreSQL in production', () => {
   assert.throws(() => validateRuntimeConfig({ NODE_ENV: 'production', PORT: '3000' }), /missing_production_api_key/);
-  const config = validateRuntimeConfig({ NODE_ENV: 'production', PORT: '3000', OMNI_BRAIN_API_KEY: 'test-key' });
+  assert.throws(() => validateRuntimeConfig({ NODE_ENV: 'production', PORT: '3000', OMNI_BRAIN_API_KEY: 'test-key' }), /missing_production_database_url/);
+  const config = validateRuntimeConfig({ NODE_ENV: 'production', PORT: '3000', OMNI_BRAIN_API_KEY: 'test-key', OMNI_BRAIN_DATABASE_URL: 'postgres://omni:omni@db/omni_brain' });
   assert.equal(config.port, 3000);
 });
 
-test('runtime config rejects invalid ports', async () => {
-  const { validateRuntimeConfig } = await import('../src/index.js');
+test('runtime config rejects invalid ports', () => {
   assert.throws(() => validateRuntimeConfig({ NODE_ENV: 'development', PORT: '70000' }), /invalid_port/);
 });
