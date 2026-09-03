@@ -3,6 +3,8 @@ import crypto from 'node:crypto';
 import { BrainStore } from './brain.js';
 import { AsyncBrainStore } from './async-brain.js';
 import { createPostgresPersistence, runPostgresMigration } from './postgres-runtime.js';
+import { PostgresRateLimitBackend } from './postgres-rate-limit.js';
+import { SharedRateLimiter } from './distributed-limiter.js';
 import { validateRuntimeConfig } from './runtime-config.js';
 import { LearningPipeline } from './learning.js';
 import { KnowledgeService } from './knowledge.js';
@@ -16,14 +18,19 @@ const databaseUrl = process.env.OMNI_BRAIN_DATABASE_URL;
 const databaseTable = config.databaseTable;
 let databaseRuntime = null;
 let store;
+let limiter;
 
 if (databaseUrl) {
   databaseRuntime = createPostgresPersistence({ url: databaseUrl, table: databaseTable });
   await runPostgresMigration(databaseRuntime.persistence);
+  const rateLimitBackend = new PostgresRateLimitBackend({ pool: databaseRuntime.persistence.pool, table: config.rateLimitTable });
+  await rateLimitBackend.init();
+  limiter = new SharedRateLimiter({ backend: rateLimitBackend, limit: config.rateLimit, windowMs: 60_000 });
   store = new AsyncBrainStore(databaseRuntime.persistence);
   await store.ready;
 } else {
   store = new BrainStore();
+  limiter = new RateLimiter({ limit: config.rateLimit, windowMs: 60_000, maxEntries: config.rateLimitMaxEntries });
 }
 
 const learning = new LearningPipeline(store);
@@ -31,7 +38,6 @@ const knowledge = new KnowledgeService(learning);
 const research = new ResearchEngine(knowledge, { allowHosts: process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST ? process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST.split(',').map(x => x.trim()).filter(Boolean) : undefined });
 const port = config.port;
 const apiKey = process.env.OMNI_BRAIN_API_KEY || '';
-const limiter = new RateLimiter({ limit: config.rateLimit, windowMs: 60_000, maxEntries: config.rateLimitMaxEntries });
 const idempotency = new IdempotencyStore({ ttlMs: config.idempotencyTtlMs, maxEntries: config.idempotencyMaxEntries });
 const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true, postgres: Boolean(databaseRuntime) } });
 let acceptingRequests = true;
@@ -96,7 +102,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, health.ready ? 200 : 503, health, context.requestId);
     }
     if (!authorized(req)) return json(res, 401, { error: 'unauthorized', requestId: context.requestId }, context.requestId);
-    const rate = limiter.check(req.socket.remoteAddress || 'unknown');
+    const rate = await limiter.check(req.socket.remoteAddress || 'unknown');
     if (!rate.allowed) return json(res, 429, { error: 'rate_limited', requestId: context.requestId }, context.requestId);
     const isWrite = req.method === 'POST';
     if (isWrite) idempotencyKey = req.headers['idempotency-key'];
@@ -132,7 +138,7 @@ server.keepAliveTimeout = 5_000;
 server.maxHeadersCount = 50;
 server.maxRequestsPerSocket = 1000;
 
-const cleanup = setInterval(() => { limiter.clearExpired(); idempotency.clearExpired(); }, 60_000);
+const cleanup = setInterval(() => { if (typeof limiter.clearExpired === 'function') limiter.clearExpired(); idempotency.clearExpired(); }, 60_000);
 cleanup.unref();
 
 const shutdown = () => {
