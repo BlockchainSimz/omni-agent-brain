@@ -27,19 +27,30 @@ export class PostgresPersistence {
     return decodeState(result.rows[0].state);
   }
 
-  async load() {
-    const result = await this.pool.query(`SELECT schema_version, state FROM ${this.table} WHERE id = 1`);
+  async load(executor = this.pool) {
+    const result = await executor.query(`SELECT schema_version, state FROM ${this.table} WHERE id = 1`);
     if (result.rows.length === 0) return null;
     if (Number(result.rows[0].schema_version) !== PERSISTENCE_SCHEMA_VERSION) throw new Error('unsupported_persistence_schema');
     return decodeState(result.rows[0].state);
   }
 
-  async save(snapshot) {
+  async save(snapshot, executor = this.pool) {
     const value = validateSnapshot(snapshot);
-    await this.pool.query(
+    await executor.query(
       `INSERT INTO ${this.table} (id, schema_version, state, updated_at) VALUES (1, $1, $2::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET schema_version = EXCLUDED.schema_version, state = EXCLUDED.state, updated_at = NOW()`,
       [PERSISTENCE_SCHEMA_VERSION, JSON.stringify(value)]
     );
+  }
+
+  async withWriteLock(operation) {
+    if (typeof this.pool.transaction !== 'function') throw new Error('transaction_support_required');
+    return this.pool.transaction(async tx => {
+      await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [this.table]);
+      return operation({
+        load: () => this.load(tx),
+        save: snapshot => this.save(snapshot, tx)
+      });
+    });
   }
 
   async healthcheck() {
