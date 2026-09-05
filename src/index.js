@@ -4,6 +4,7 @@ import { BrainStore } from './brain.js';
 import { AsyncBrainStore } from './async-brain.js';
 import { createPostgresPersistence, runPostgresMigration } from './postgres-runtime.js';
 import { PostgresRateLimitBackend } from './postgres-rate-limit.js';
+import { PostgresIdempotencyStore } from './postgres-idempotency.js';
 import { SharedRateLimiter } from './distributed-limiter.js';
 import { validateRuntimeConfig } from './runtime-config.js';
 import { LearningPipeline } from './learning.js';
@@ -19,6 +20,7 @@ const databaseTable = config.databaseTable;
 let databaseRuntime = null;
 let store;
 let limiter;
+let idempotency;
 
 if (databaseUrl) {
   databaseRuntime = createPostgresPersistence({ url: databaseUrl, table: databaseTable });
@@ -26,11 +28,14 @@ if (databaseUrl) {
   const rateLimitBackend = new PostgresRateLimitBackend({ pool: databaseRuntime.persistence.pool, table: config.rateLimitTable });
   await rateLimitBackend.init();
   limiter = new SharedRateLimiter({ backend: rateLimitBackend, limit: config.rateLimit, windowMs: 60_000 });
+  idempotency = new PostgresIdempotencyStore({ pool: databaseRuntime.persistence.pool, table: config.idempotencyTable, ttlMs: config.idempotencyTtlMs });
+  await idempotency.init();
   store = new AsyncBrainStore(databaseRuntime.persistence);
   await store.ready;
 } else {
   store = new BrainStore();
   limiter = new RateLimiter({ limit: config.rateLimit, windowMs: 60_000, maxEntries: config.rateLimitMaxEntries });
+  idempotency = new IdempotencyStore({ ttlMs: config.idempotencyTtlMs, maxEntries: config.idempotencyMaxEntries });
 }
 
 const learning = new LearningPipeline(store);
@@ -38,7 +43,6 @@ const knowledge = new KnowledgeService(learning);
 const research = new ResearchEngine(knowledge, { allowHosts: process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST ? process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST.split(',').map(x => x.trim()).filter(Boolean) : undefined });
 const port = config.port;
 const apiKey = process.env.OMNI_BRAIN_API_KEY || '';
-const idempotency = new IdempotencyStore({ ttlMs: config.idempotencyTtlMs, maxEntries: config.idempotencyMaxEntries });
 const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true, postgres: Boolean(databaseRuntime) } });
 let acceptingRequests = true;
 
@@ -138,7 +142,7 @@ server.keepAliveTimeout = 5_000;
 server.maxHeadersCount = 50;
 server.maxRequestsPerSocket = 1000;
 
-const cleanup = setInterval(() => { if (typeof limiter.clearExpired === 'function') limiter.clearExpired(); idempotency.clearExpired(); }, 60_000);
+const cleanup = setInterval(() => { if (typeof limiter.clearExpired === 'function') limiter.clearExpired(); if (typeof idempotency.clearExpired === 'function') idempotency.clearExpired().catch(() => {}); }, 60_000);
 cleanup.unref();
 
 const shutdown = () => {
