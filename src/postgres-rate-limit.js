@@ -10,6 +10,7 @@ export class PostgresRateLimitBackend {
 
   async init() {
     await this.pool.query(`CREATE TABLE IF NOT EXISTS ${this.table} (key TEXT PRIMARY KEY, count INTEGER NOT NULL, reset_at TIMESTAMPTZ NOT NULL)`);
+    await this.pool.query(`CREATE INDEX IF NOT EXISTS ${this.table}_reset_at_idx ON ${this.table} (reset_at)`);
   }
 
   async increment(key, windowMs) {
@@ -20,5 +21,9 @@ export class PostgresRateLimitBackend {
     );
     const row = result.rows[0];
     return { count: Number(row.count), resetAt: Number(row.reset_at) };
+  }
+
+  async clearExpired() {
+    await this.pool.query(`DELETE FROM ${this.table} WHERE reset_at <= NOW()`);
   }
 }
