@@ -20,6 +20,27 @@ export class AsyncBrainStore {
   async #write(operation) {
     await this.ready;
     const run = this.writeQueue.then(async () => {
+      if (typeof this.persistence.withWriteLock === 'function') {
+        return this.persistence.withWriteLock(async tx => {
+          const saved = await tx.load();
+          const memory = new MemoryPersistence();
+          if (saved !== null) memory.save(saved);
+          const brain = new BrainStore(memory);
+          const before = brain.snapshot();
+          try {
+            const result = await operation(brain);
+            await tx.save(brain.snapshot());
+            this.brain = brain;
+            return result;
+          } catch (error) {
+            const restore = new MemoryPersistence();
+            restore.save(before);
+            this.brain = new BrainStore(restore);
+            throw error;
+          }
+        });
+      }
+
       const before = this.brain.snapshot();
       try {
         const result = await operation(this.brain);
