@@ -5,7 +5,7 @@ const KEY = /^[A-Za-z0-9._:-]{1,128}$/;
 
 export class PostgresIdempotencyStore {
   constructor({ pool, table = 'omni_brain_idempotency', ttlMs = 600_000, leaseMs = 30_000 } = {}) {
-    if (!pool || typeof pool.query !== 'function') throw new Error('invalid_idempotency_backend');
+    if (!pool || typeof pool.query !== 'function' || typeof pool.transaction !== 'function') throw new Error('invalid_idempotency_backend');
     if (!IDENTIFIER.test(table)) throw new Error('invalid_idempotency_table');
     if (!Number.isFinite(ttlMs) || ttlMs < 1) throw new Error('invalid_idempotency_ttl');
     if (!Number.isFinite(leaseMs) || leaseMs < 1) throw new Error('invalid_idempotency_lease');
@@ -29,7 +29,7 @@ export class PostgresIdempotencyStore {
 
     try {
       const result = await operation();
-      await this.pool.query(`UPDATE ${this.table} SET status = 'completed', result = $2::jsonb, updated_at = NOW(), lease_until = NOW() WHERE key = $1 AND fingerprint = $3`, [key, JSON.stringify(result), fingerprint]);
+      await this.pool.query(`UPDATE ${this.table} SET status = 'completed', result = $2::jsonb, updated_at = NOW(), lease_until = NOW() WHERE key = $1 AND fingerprint = $3 AND status = 'pending'`, [key, JSON.stringify(result), fingerprint]);
       return result;
     } catch (error) {
       await this.pool.query(`DELETE FROM ${this.table} WHERE key = $1 AND fingerprint = $2 AND status = 'pending'`, [key, fingerprint]).catch(() => {});
@@ -38,16 +38,25 @@ export class PostgresIdempotencyStore {
   }
 
   async #claim(key, fingerprint) {
-    const result = await this.pool.query(`INSERT INTO ${this.table} (key, fingerprint, status, expires_at, lease_until) VALUES ($1, $2, 'pending', NOW() + ($3 * INTERVAL '1 millisecond'), NOW() + ($4 * INTERVAL '1 millisecond')) ON CONFLICT (key) DO UPDATE SET lease_until = CASE WHEN ${this.table}.status = 'pending' AND ${this.table}.lease_until <= NOW() THEN NOW() + ($4 * INTERVAL '1 millisecond') ELSE ${this.table}.lease_until END, updated_at = CASE WHEN ${this.table}.status = 'pending' AND ${this.table}.lease_until <= NOW() THEN NOW() ELSE ${this.table}.updated_at END RETURNING fingerprint, status, result, lease_until, expires_at`, [key, fingerprint, this.ttlMs, this.leaseMs]);
-    const row = result.rows[0];
-    if (row.fingerprint !== fingerprint) {
-      const error = new Error('idempotency_key_reused');
-      error.statusCode = 409;
-      throw error;
-    }
-    if (row.status === 'completed') return { kind: 'completed', result: typeof row.result === 'string' ? JSON.parse(row.result) : row.result };
-    const owned = Number(new Date(row.lease_until)) > Date.now() - 1000;
-    return { kind: owned ? 'wait' : 'wait' };
+    return this.pool.transaction(async tx => {
+      const existing = await tx.query(`SELECT fingerprint, status, result, lease_until, expires_at FROM ${this.table} WHERE key = $1 FOR UPDATE`, [key]);
+      if (existing.rows.length === 0) {
+        await tx.query(`INSERT INTO ${this.table} (key, fingerprint, status, expires_at, lease_until) VALUES ($1, $2, 'pending', NOW() + ($3 * INTERVAL '1 millisecond'), NOW() + ($4 * INTERVAL '1 millisecond'))`, [key, fingerprint, this.ttlMs, this.leaseMs]);
+        return { kind: 'owner' };
+      }
+      const row = existing.rows[0];
+      if (row.fingerprint !== fingerprint) {
+        const error = new Error('idempotency_key_reused');
+        error.statusCode = 409;
+        throw error;
+      }
+      if (row.status === 'completed' && Number(new Date(row.expires_at)) > Date.now()) return { kind: 'completed', result: typeof row.result === 'string' ? JSON.parse(row.result) : row.result };
+      if (Number(new Date(row.lease_until)) <= Date.now()) {
+        await tx.query(`UPDATE ${this.table} SET status = 'pending', result = NULL, expires_at = NOW() + ($2 * INTERVAL '1 millisecond'), lease_until = NOW() + ($3 * INTERVAL '1 millisecond'), updated_at = NOW() WHERE key = $1`, [key, this.ttlMs, this.leaseMs]);
+        return { kind: 'owner' };
+      }
+      return { kind: 'wait' };
+    });
   }
 
   async #wait(key, fingerprint) {
@@ -55,10 +64,10 @@ export class PostgresIdempotencyStore {
     while (Date.now() < deadline) {
       const result = await this.pool.query(`SELECT fingerprint, status, result, lease_until, expires_at FROM ${this.table} WHERE key = $1`, [key]);
       const row = result.rows[0];
-      if (!row) return this.run(key, null, async () => { throw new Error('idempotency_claim_lost'); });
+      if (!row) { await new Promise(resolve => setTimeout(resolve, 25)); continue; }
       if (row.fingerprint !== fingerprint) { const error = new Error('idempotency_key_reused'); error.statusCode = 409; throw error; }
-      if (row.status === 'completed') return typeof row.result === 'string' ? JSON.parse(row.result) : row.result;
-      if (Number(new Date(row.lease_until)) <= Date.now()) throw new Error('idempotency_in_progress');
+      if (row.status === 'completed' && Number(new Date(row.expires_at)) > Date.now()) return typeof row.result === 'string' ? JSON.parse(row.result) : row.result;
+      if (Number(new Date(row.lease_until)) <= Date.now()) return this.run(key, null, async () => { throw new Error('idempotency_claim_lost'); });
       await new Promise(resolve => setTimeout(resolve, 25));
     }
     const error = new Error('idempotency_in_progress');
