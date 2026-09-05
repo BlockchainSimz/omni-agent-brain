@@ -18,6 +18,14 @@ export function createPostgresPersistence({ url = process.env.OMNI_BRAIN_DATABAS
     async query(text, params = []) {
       const rows = await sql.unsafe(text, params);
       return { rows };
+    },
+    async transaction(callback) {
+      return sql.begin(async tx => callback({
+        async query(text, params = []) {
+          const rows = await tx.unsafe(text, params);
+          return { rows };
+        }
+      }));
     }
   };
 
