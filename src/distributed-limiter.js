@@ -16,6 +16,10 @@ export class SharedRateLimiter {
     if (!Number.isFinite(count) || !Number.isFinite(resetAt)) throw new Error('invalid_rate_limit_backend_response');
     return { allowed: count <= this.limit, remaining: Math.max(0, this.limit - count), resetAt };
   }
+
+  async clearExpired() {
+    if (typeof this.backend.clearExpired === 'function') await this.backend.clearExpired();
+  }
 }
 
 export class InMemorySharedRateLimitBackend {
