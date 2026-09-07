@@ -20,12 +20,23 @@ export function createPostgresPersistence({ url = process.env.OMNI_BRAIN_DATABAS
       return { rows };
     },
     async transaction(callback) {
-      return sql.begin(async tx => callback({
-        async query(text, params = []) {
-          const rows = await tx.unsafe(text, params);
-          return { rows };
-        }
-      }));
+      const connection = await sql.reserve();
+      try {
+        await connection.unsafe('BEGIN');
+        const result = await callback({
+          async query(text, params = []) {
+            const rows = await connection.unsafe(text, params);
+            return { rows };
+          }
+        });
+        await connection.unsafe('COMMIT');
+        return result;
+      } catch (error) {
+        await connection.unsafe('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        connection.release();
+      }
     }
   };
 
