@@ -142,7 +142,10 @@ server.keepAliveTimeout = 5_000;
 server.maxHeadersCount = 50;
 server.maxRequestsPerSocket = 1000;
 
-const cleanup = setInterval(() => { if (typeof limiter.clearExpired === 'function') limiter.clearExpired().catch?.(() => {}); if (typeof idempotency.clearExpired === 'function') idempotency.clearExpired().catch(() => {}); }, 60_000);
+const cleanup = setInterval(async () => {
+  try { await limiter.clearExpired(); } catch {}
+  try { await idempotency.clearExpired(); } catch {}
+}, 60_000);
 cleanup.unref();
 
 const shutdown = () => {
