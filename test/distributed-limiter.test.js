@@ -17,6 +17,18 @@ test('shared rate limiter enforces a backend-backed window', async () => {
   assert.equal(Number.isFinite(first.resetAt), true);
 });
 
+test('shared rate limiter delegates cleanup to the backend', async () => {
+  let cleaned = 0;
+  const limiter = new SharedRateLimiter({
+    backend: {
+      increment: async () => ({ count: 1, resetAt: Date.now() + 1000 }),
+      clearExpired: async () => { cleaned += 1; }
+    }
+  });
+  await limiter.clearExpired();
+  assert.equal(cleaned, 1);
+});
+
 test('shared rate limiter validates backend responses', async () => {
   const limiter = new SharedRateLimiter({ backend: { increment: async () => ({ count: 'bad', resetAt: 1 }) } });
   await assert.rejects(() => limiter.check('client-a'), /invalid_rate_limit_backend_response/);
