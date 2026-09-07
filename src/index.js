@@ -28,7 +28,7 @@ if (databaseUrl) {
   const rateLimitBackend = new PostgresRateLimitBackend({ pool: databaseRuntime.persistence.pool, table: config.rateLimitTable });
   await rateLimitBackend.init();
   limiter = new SharedRateLimiter({ backend: rateLimitBackend, limit: config.rateLimit, windowMs: 60_000 });
-  idempotency = new PostgresIdempotencyStore({ pool: databaseRuntime.persistence.pool, table: config.idempotencyTable, ttlMs: config.idempotencyTtlMs });
+  idempotency = new PostgresIdempotencyStore({ pool: databaseRuntime.persistence.pool, table: config.idempotencyTable, ttlMs: config.idempotencyTtlMs, leaseMs: config.idempotencyLeaseMs });
   await idempotency.init();
   store = new AsyncBrainStore(databaseRuntime.persistence);
   await store.ready;
@@ -114,7 +114,7 @@ const server = http.createServer(async (req, res) => {
     const readBody = async () => { if (input === undefined) input = await body(req); return input; };
     const runWrite = async operationFn => {
       if (!isWrite || !idempotencyKey) return operationFn();
-      return idempotency.run(idempotencyKey, input, operationFn);
+      return idempotency.run(idempotencyKey, { method: req.method, path: url.pathname, payload: input }, operationFn);
     };
     if (req.method === 'GET' && url.pathname === '/v1/snapshot') return json(res, 200, await store.snapshot(), context.requestId);
     if (req.method === 'GET' && url.pathname === '/v1/memories/search') return json(res, 200, { results: await store.searchMemories(url.searchParams.get('q') || '', { limit: url.searchParams.get('limit'), minScore: url.searchParams.get('minScore') }) }, context.requestId);
@@ -142,7 +142,7 @@ server.keepAliveTimeout = 5_000;
 server.maxHeadersCount = 50;
 server.maxRequestsPerSocket = 1000;
 
-const cleanup = setInterval(() => { if (typeof limiter.clearExpired === 'function') limiter.clearExpired(); if (typeof idempotency.clearExpired === 'function') idempotency.clearExpired().catch(() => {}); }, 60_000);
+const cleanup = setInterval(() => { if (typeof limiter.clearExpired === 'function') limiter.clearExpired().catch?.(() => {}); if (typeof idempotency.clearExpired === 'function') idempotency.clearExpired().catch(() => {}); }, 60_000);
 cleanup.unref();
 
 const shutdown = () => {
