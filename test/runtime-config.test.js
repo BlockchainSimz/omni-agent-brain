@@ -8,6 +8,7 @@ const base = {
   OMNI_BRAIN_RATE_LIMIT: '60',
   OMNI_BRAIN_RATE_LIMIT_MAX_ENTRIES: '10000',
   OMNI_BRAIN_IDEMPOTENCY_TTL_MS: '600000',
+  OMNI_BRAIN_IDEMPOTENCY_LEASE_MS: '60000',
   OMNI_BRAIN_IDEMPOTENCY_MAX_ENTRIES: '10000',
   OMNI_BRAIN_DATABASE_TABLE: 'omni_brain_state',
   OMNI_BRAIN_RATE_LIMIT_TABLE: 'omni_brain_rate_limits',
@@ -25,4 +26,10 @@ test('database table identifiers are validated before startup', () => {
   assert.throws(() => validateRuntimeConfig({ ...base, OMNI_BRAIN_RATE_LIMIT_TABLE: 'state;DROP TABLE users' }), /invalid_rate_limit_table/);
   assert.throws(() => validateRuntimeConfig({ ...base, OMNI_BRAIN_IDEMPOTENCY_TABLE: 'state;DROP TABLE users' }), /invalid_idempotency_table/);
   assert.doesNotThrow(() => validateRuntimeConfig({ ...base, OMNI_BRAIN_DATABASE_TABLE: 'tenant_state_01', OMNI_BRAIN_RATE_LIMIT_TABLE: 'tenant_rate_limits_01', OMNI_BRAIN_IDEMPOTENCY_TABLE: 'tenant_idempotency_01' }));
+});
+
+test('idempotency lease must be positive and shorter than the TTL', () => {
+  assert.throws(() => validateRuntimeConfig({ ...base, OMNI_BRAIN_IDEMPOTENCY_LEASE_MS: '0' }), /invalid_idempotency_lease/);
+  assert.throws(() => validateRuntimeConfig({ ...base, OMNI_BRAIN_IDEMPOTENCY_LEASE_MS: '600000' }), /invalid_idempotency_lease/);
+  assert.doesNotThrow(() => validateRuntimeConfig({ ...base, OMNI_BRAIN_IDEMPOTENCY_LEASE_MS: '30000' }));
 });
