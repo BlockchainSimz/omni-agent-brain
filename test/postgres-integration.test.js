@@ -35,11 +35,12 @@ test('PostgreSQL persistence preserves concurrent writes across AsyncBrainStore 
       first.remember({ content: 'postgres-writer-one', source: 'integration-test' }),
       second.remember({ content: 'postgres-writer-two', source: 'integration-test' })
     ]);
-    const snapshot = await first.snapshot();
+    const reloaded = new AsyncBrainStore(runtime.persistence);
+    const snapshot = await reloaded.snapshot();
     assert.equal(snapshot.memories.length, 2);
     assert.deepEqual(new Set(snapshot.memories.map(memory => memory.content)), new Set(['postgres-writer-one', 'postgres-writer-two']));
     assert.equal(snapshot.audit.length, 2);
-    assert.equal(await first.verifyAudit(), true);
+    assert.equal(await reloaded.verifyAudit(), true);
   } finally {
     await runtime.persistence.pool.query('DELETE FROM omni_brain_state WHERE id = 1').catch(() => {});
     await runtime.close();
