@@ -4,9 +4,9 @@ A provenance-aware foundation for a self-improving AI agent brain.
 
 ## Current status
 
-**v0.3.0 production foundation — Phase 10 vector retrieval implemented.** The repository contains an executable core, hardened HTTP API, PostgreSQL persistence, async concurrency controls, provenance tracking, guarded skill promotion, rollback support, authentication, rate limiting, idempotency, production Docker support, and deterministic vector-based semantic retrieval.
+**v0.4.0 production foundation — Phase 11 persistent vector retrieval.** The repository contains an executable core, hardened HTTP API, PostgreSQL persistence, async concurrency controls, provenance tracking, guarded skill promotion, rollback support, authentication, rate limiting, idempotency, production Docker support, deterministic semantic retrieval, and PostgreSQL/pgvector-backed vector search.
 
-The service is a hardened foundation, not a complete autonomous AI platform. External learning, model orchestration, production-grade embedding providers, vector-database storage, sandboxed execution, and distributed infrastructure remain roadmap work.
+The service is a hardened foundation, not a complete autonomous AI platform. External learning, model orchestration, production-grade embedding providers, sandboxed execution, and distributed infrastructure remain roadmap work.
 
 ## Production readiness
 
@@ -14,31 +14,18 @@ Before exposing the service to real traffic:
 
 - Set `NODE_ENV=production`.
 - Set a strong `OMNI_BRAIN_API_KEY` through the deployment secret manager; never commit it.
-- Set `OMNI_BRAIN_DATABASE_URL` to a production PostgreSQL instance. Production startup intentionally fails closed if PostgreSQL is not configured, preventing accidental use of ephemeral in-memory persistence.
-- Optionally set `OMNI_BRAIN_DATABASE_TABLE` to a validated PostgreSQL identifier when a separate state table is required.
+- Set `OMNI_BRAIN_DATABASE_URL` to a production PostgreSQL instance with the `vector` extension available.
+- Optionally set `OMNI_BRAIN_DATABASE_TABLE`, `OMNI_BRAIN_VECTOR_TABLE`, `OMNI_BRAIN_RATE_LIMIT_TABLE`, and `OMNI_BRAIN_IDEMPOTENCY_TABLE` to validated PostgreSQL identifiers.
 - Put TLS and a trusted reverse proxy/load balancer in front of the service.
 - Configure `PORT` and rate/idempotency limits for the deployment size.
 - Treat `/health` as the container liveness check and `/ready` as the service readiness endpoint.
-- Do not rely on the in-memory rate limiter or idempotency store for correctness across multiple replicas; distributed deployments require a shared store.
 - Back up and validate persistent storage before enabling production data workloads.
-
-## Security controls
-
-- Production requires API authentication and PostgreSQL persistence.
-- Only `GET` and `POST` HTTP methods are accepted; writes require `application/json`.
-- Request bodies are capped at 64 KiB and server request/header/keep-alive limits are bounded.
-- Responses include `nosniff`, `DENY` framing, restrictive CSP, no-referrer policy, and a restrictive permissions policy.
-- Request correlation IDs are validated and internal errors do not expose underlying exception messages.
-- Rate limiting and idempotency state are bounded and periodically expired.
-- PostgreSQL table identifiers are validated before being interpolated into SQL; state values use parameterized writes.
-- Readiness checks PostgreSQL connectivity dynamically and returns `503` while the dependency is unavailable.
-- Secrets must remain in deployment secret storage and outside source control, logs, prompts, and persisted brain state.
 
 ## Semantic retrieval
 
-Memories now carry a deterministic 256-dimensional embedding generated from hashed word, word-bigram, and character-trigram features. A bounded in-memory `VectorIndex` maintains the searchable vectors and uses cosine similarity for ranking. Embeddings are persisted with memory snapshots and rebuilt on startup, so JSON and PostgreSQL-backed async instances retain retrieval behavior across reloads.
+Memories carry deterministic 256-dimensional embeddings generated from hashed word, word-bigram, and character-trigram features. PostgreSQL deployments persist active memory embeddings in a `pgvector` table and use cosine-distance search; the service falls back to the in-memory retrieval implementation if the vector backend is temporarily unavailable. The vector index is HNSW-backed for scalable approximate nearest-neighbor search. citeturn0search0
 
-The embedding implementation is intentionally dependency-free and deterministic. It is a foundation for later replacement with a model-backed embedding provider and a dedicated vector database/`pgvector` adapter; it should not be described as equivalent to a neural embedding model.
+The embedding implementation is intentionally dependency-free and deterministic. It is a foundation for later replacement with a model-backed embedding provider; it should not be described as equivalent to a neural embedding model.
 
 ## Architecture
 
@@ -46,7 +33,7 @@ The embedding implementation is intentionally dependency-free and deterministic.
 External observations
         |
         v
-  Provenance memory ---> embedding ---> vector index ---> semantic retrieval
+  Provenance memory ---> embedding ---> pgvector/HNSW ---> semantic retrieval
         |                                      |
         v                                      v
  validation ---> trusted knowledge       ranked context
@@ -63,7 +50,8 @@ External observations
 - Candidate memory with source provenance and source hashing
 - Confidence and validation state
 - Deterministic vector embeddings and cosine-similarity retrieval
-- Persisted embeddings with startup index rebuild
+- PostgreSQL/pgvector persistent vector storage and HNSW retrieval
+- Vector synchronization after persistent brain writes with graceful fallback
 - Candidate skill registry
 - Promotion gates: passing evaluation, score >= 0.8, zero regression rate
 - Explicit rollback/deprecation
@@ -81,6 +69,22 @@ External observations
 - PostgreSQL persistence adapter with parameterized state writes, schema-version checks, identifier validation, and healthcheck
 - Async PostgreSQL-backed brain integration with serialized writes and rollback-on-failure semantics
 - Security policy for untrusted external content and self-modification
+
+## Development
+
+Requires Node.js 20+.
+
+```bash
+npm ci
+npm test
+npm run test:load
+npm run test:postgres
+npm run lint
+npm audit --audit-level=high
+npm start
+```
+
+The CI PostgreSQL service uses a pgvector-enabled PostgreSQL image so the real vector integration tests exercise the same extension required by the application. citeturn0search0
 
 ## API
 
@@ -102,20 +106,6 @@ POST /v1/skills/:id/promote
 POST /v1/skills/:id/rollback
 ```
 
-## Development
-
-Requires Node.js 20+.
-
-```bash
-npm ci
-npm test
-npm run test:load
-npm run test:postgres
-npm run lint
-npm audit --audit-level=high
-npm start
-```
-
 ## Production container
 
 ```bash
@@ -132,7 +122,7 @@ The image runs as the non-root `node` user and exposes a Docker healthcheck agai
 ## Evolution roadmap
 
 1. ~~Persistent PostgreSQL storage and migrations~~ — async integration completed
-2. ~~Vector/semantic retrieval layer~~ — deterministic vector foundation completed
+2. ~~Vector/semantic retrieval layer~~ — persistent pgvector integration completed
 3. Episodic, semantic, procedural and working-memory stores
 4. Source ingestion adapters for GitHub and approved knowledge sources
 5. Evaluation/benchmark service with reproducible datasets
@@ -141,6 +131,6 @@ The image runs as the non-root `node` user and exposes a Docker healthcheck agai
 8. ~~Distributed observability, rate limiting and idempotency~~ — foundation completed
 9. Automated freshness/knowledge-decay jobs
 10. Human approval controls for high-impact capability changes
-11. Production model-backed embeddings and dedicated vector storage
+11. Production model-backed embeddings and vector lifecycle management
 
 See [`SECURITY.md`](SECURITY.md) for the self-modification and provenance policy.
