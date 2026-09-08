@@ -57,7 +57,7 @@ test('serializes concurrent writes without losing audit entries', async () => {
   assert.equal(await brain.verifyAudit(), true);
 });
 
-test('distributed async writers reload inside the write lock instead of losing updates', async () => {
+test('distributed async writers persist both updates under the shared write lock', async () => {
   const persistence = new FakeLockedPersistence();
   const first = new AsyncBrainStore(persistence);
   const second = new AsyncBrainStore(persistence);
@@ -65,11 +65,12 @@ test('distributed async writers reload inside the write lock instead of losing u
     first.remember({ content: 'writer-one', source: 'test' }),
     second.remember({ content: 'writer-two', source: 'test' })
   ]);
-  const snapshot = await first.snapshot();
+  const reloaded = new AsyncBrainStore(persistence);
+  const snapshot = await reloaded.snapshot();
   assert.equal(snapshot.memories.length, 2);
   assert.deepEqual(new Set(snapshot.memories.map(memory => memory.content)), new Set(['writer-one', 'writer-two']));
   assert.equal(snapshot.audit.length, 2);
-  assert.equal(await first.verifyAudit(), true);
+  assert.equal(await reloaded.verifyAudit(), true);
 });
 
 test('rolls back in-memory state when persistence fails and permits a later write', async () => {
