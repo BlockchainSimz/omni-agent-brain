@@ -64,6 +64,8 @@ test('postgres vector store persists and retrieves semantic memories with pgvect
     ] });
     const results = await store.search('API retry strategy', { limit: 2 });
     assert.equal(results[0].id, 'api');
+    assert.equal(results[0].content, 'bounded retries for idempotent API requests');
+    assert.equal(results[0].status, 'validated');
     assert.ok(results[0].score > results[1].score);
     assert.equal(await store.count(), 2);
   } finally {
