@@ -2,8 +2,9 @@ import { BrainStore, MemoryPersistence } from './brain.js';
 import { assertAsyncPersistenceAdapter } from './async-persistence.js';
 
 export class AsyncBrainStore {
-  constructor(persistence) {
+  constructor(persistence, { vectorStore = null } = {}) {
     this.persistence = assertAsyncPersistenceAdapter(persistence);
+    this.vectorStore = vectorStore;
     this.brain = null;
     this.ready = this.#load();
     this.writeQueue = Promise.resolve();
@@ -14,24 +15,32 @@ export class AsyncBrainStore {
     const memory = new MemoryPersistence();
     if (saved !== null) memory.save(saved);
     this.brain = new BrainStore(memory);
+    if (this.vectorStore) {
+      try { await this.vectorStore.sync(this.brain.snapshot()); } catch {}
+    }
     return this;
+  }
+
+  async #syncVectors() {
+    if (!this.vectorStore) return;
+    try { await this.vectorStore.sync(this.brain.snapshot()); } catch {}
   }
 
   async #write(operation) {
     await this.ready;
     const run = this.writeQueue.then(async () => {
       if (typeof this.persistence.withWriteLock === 'function') {
-        return this.persistence.withWriteLock(async tx => {
+        const result = await this.persistence.withWriteLock(async tx => {
           const saved = await tx.load();
           const memory = new MemoryPersistence();
           if (saved !== null) memory.save(saved);
           const brain = new BrainStore(memory);
           const before = brain.snapshot();
           try {
-            const result = await operation(brain);
+            const value = await operation(brain);
             await tx.save(brain.snapshot());
             this.brain = brain;
-            return result;
+            return value;
           } catch (error) {
             const restore = new MemoryPersistence();
             restore.save(before);
@@ -39,12 +48,15 @@ export class AsyncBrainStore {
             throw error;
           }
         });
+        await this.#syncVectors();
+        return result;
       }
 
       const before = this.brain.snapshot();
       try {
         const result = await operation(this.brain);
         await this.persistence.save(this.brain.snapshot());
+        await this.#syncVectors();
         return result;
       } catch (error) {
         this.#restore(before);
@@ -71,6 +83,9 @@ export class AsyncBrainStore {
 
   async searchMemories(query, options = {}) {
     await this.ready;
+    if (this.vectorStore) {
+      try { return await this.vectorStore.search(query, options); } catch {}
+    }
     return this.brain.searchMemories(query, options);
   }
 
