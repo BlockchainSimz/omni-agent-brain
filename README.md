@@ -4,9 +4,9 @@ A provenance-aware foundation for a self-improving AI agent brain.
 
 ## Current status
 
-**v0.2.0 production foundation — Phase 8 in progress.** The repository contains an executable core, hardened HTTP API, concurrency smoke testing, CI, provenance tracking, guarded skill promotion, rollback support, runtime observability, authentication, rate limiting, idempotency, production JSON persistence, and PostgreSQL persistence with async integration.
+**v0.3.0 production foundation — Phase 10 vector retrieval implemented.** The repository contains an executable core, hardened HTTP API, PostgreSQL persistence, async concurrency controls, provenance tracking, guarded skill promotion, rollback support, authentication, rate limiting, idempotency, production Docker support, and deterministic vector-based semantic retrieval.
 
-The service is a hardened foundation, not a complete autonomous AI platform. External learning, model orchestration, vector retrieval, sandboxed execution, and distributed infrastructure remain roadmap work.
+The service is a hardened foundation, not a complete autonomous AI platform. External learning, model orchestration, production-grade embedding providers, vector-database storage, sandboxed execution, and distributed infrastructure remain roadmap work.
 
 ## Production readiness
 
@@ -34,15 +34,23 @@ Before exposing the service to real traffic:
 - Readiness checks PostgreSQL connectivity dynamically and returns `503` while the dependency is unavailable.
 - Secrets must remain in deployment secret storage and outside source control, logs, prompts, and persisted brain state.
 
+## Semantic retrieval
+
+Memories now carry a deterministic 256-dimensional embedding generated from hashed word, word-bigram, and character-trigram features. A bounded in-memory `VectorIndex` maintains the searchable vectors and uses cosine similarity for ranking. Embeddings are persisted with memory snapshots and rebuilt on startup, so JSON and PostgreSQL-backed async instances retain retrieval behavior across reloads.
+
+The embedding implementation is intentionally dependency-free and deterministic. It is a foundation for later replacement with a model-backed embedding provider and a dedicated vector database/`pgvector` adapter; it should not be described as equivalent to a neural embedding model.
+
 ## Architecture
 
 ```text
 External observations
         |
         v
-  Provenance memory ---> validation ---> trusted knowledge
+  Provenance memory ---> embedding ---> vector index ---> semantic retrieval
+        |                                      |
+        v                                      v
+ validation ---> trusted knowledge       ranked context
         |
-        v
  Candidate skill ---> evaluation ---> promotion ---> versioning
                               |                         |
                               +------ regression <------+
@@ -54,7 +62,8 @@ External observations
 
 - Candidate memory with source provenance and source hashing
 - Confidence and validation state
-- Audit events for memory and skill lifecycle changes
+- Deterministic vector embeddings and cosine-similarity retrieval
+- Persisted embeddings with startup index rebuild
 - Candidate skill registry
 - Promotion gates: passing evaluation, score >= 0.8, zero regression rate
 - Explicit rollback/deprecation
@@ -123,14 +132,15 @@ The image runs as the non-root `node` user and exposes a Docker healthcheck agai
 ## Evolution roadmap
 
 1. ~~Persistent PostgreSQL storage and migrations~~ — async integration completed
-2. Vector/semantic retrieval layer
+2. ~~Vector/semantic retrieval layer~~ — deterministic vector foundation completed
 3. Episodic, semantic, procedural and working-memory stores
 4. Source ingestion adapters for GitHub and approved knowledge sources
 5. Evaluation/benchmark service with reproducible datasets
 6. Sandboxed code/tool execution
 7. Model/provider abstraction and cost controls
-8. Distributed observability, rate limiting and idempotency
+8. ~~Distributed observability, rate limiting and idempotency~~ — foundation completed
 9. Automated freshness/knowledge-decay jobs
 10. Human approval controls for high-impact capability changes
+11. Production model-backed embeddings and dedicated vector storage
 
 See [`SECURITY.md`](SECURITY.md) for the self-modification and provenance policy.
