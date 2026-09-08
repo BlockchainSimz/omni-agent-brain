@@ -12,7 +12,8 @@ const base = {
   OMNI_BRAIN_IDEMPOTENCY_MAX_ENTRIES: '10000',
   OMNI_BRAIN_DATABASE_TABLE: 'omni_brain_state',
   OMNI_BRAIN_RATE_LIMIT_TABLE: 'omni_brain_rate_limits',
-  OMNI_BRAIN_IDEMPOTENCY_TABLE: 'omni_brain_idempotency'
+  OMNI_BRAIN_IDEMPOTENCY_TABLE: 'omni_brain_idempotency',
+  OMNI_BRAIN_VECTOR_TABLE: 'omni_brain_vectors'
 };
 
 test('production requires API authentication and PostgreSQL persistence', () => {
@@ -25,7 +26,8 @@ test('database table identifiers are validated before startup', () => {
   assert.throws(() => validateRuntimeConfig({ ...base, OMNI_BRAIN_DATABASE_TABLE: 'state;DROP TABLE users' }), /invalid_postgres_table/);
   assert.throws(() => validateRuntimeConfig({ ...base, OMNI_BRAIN_RATE_LIMIT_TABLE: 'state;DROP TABLE users' }), /invalid_rate_limit_table/);
   assert.throws(() => validateRuntimeConfig({ ...base, OMNI_BRAIN_IDEMPOTENCY_TABLE: 'state;DROP TABLE users' }), /invalid_idempotency_table/);
-  assert.doesNotThrow(() => validateRuntimeConfig({ ...base, OMNI_BRAIN_DATABASE_TABLE: 'tenant_state_01', OMNI_BRAIN_RATE_LIMIT_TABLE: 'tenant_rate_limits_01', OMNI_BRAIN_IDEMPOTENCY_TABLE: 'tenant_idempotency_01' }));
+  assert.throws(() => validateRuntimeConfig({ ...base, OMNI_BRAIN_VECTOR_TABLE: 'state;DROP TABLE users' }), /invalid_vector_table/);
+  assert.doesNotThrow(() => validateRuntimeConfig({ ...base, OMNI_BRAIN_DATABASE_TABLE: 'tenant_state_01', OMNI_BRAIN_RATE_LIMIT_TABLE: 'tenant_rate_limits_01', OMNI_BRAIN_IDEMPOTENCY_TABLE: 'tenant_idempotency_01', OMNI_BRAIN_VECTOR_TABLE: 'tenant_vectors_01' }));
 });
 
 test('idempotency lease must be positive and shorter than the TTL', () => {
