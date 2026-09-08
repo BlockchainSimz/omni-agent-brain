@@ -5,6 +5,7 @@ import { AsyncBrainStore } from './async-brain.js';
 import { createPostgresPersistence, runPostgresMigration } from './postgres-runtime.js';
 import { PostgresRateLimitBackend } from './postgres-rate-limit.js';
 import { PostgresIdempotencyStore } from './postgres-idempotency.js';
+import { PostgresVectorStore } from './postgres-vector-store.js';
 import { SharedRateLimiter } from './distributed-limiter.js';
 import { validateRuntimeConfig } from './runtime-config.js';
 import { LearningPipeline } from './learning.js';
@@ -21,16 +22,19 @@ let databaseRuntime = null;
 let store;
 let limiter;
 let idempotency;
+let vectorStore = null;
 
 if (databaseUrl) {
   databaseRuntime = createPostgresPersistence({ url: databaseUrl, table: databaseTable });
   await runPostgresMigration(databaseRuntime.persistence);
+  vectorStore = new PostgresVectorStore({ pool: databaseRuntime.persistence.pool, table: config.vectorTable });
+  await vectorStore.init();
   const rateLimitBackend = new PostgresRateLimitBackend({ pool: databaseRuntime.persistence.pool, table: config.rateLimitTable });
   await rateLimitBackend.init();
   limiter = new SharedRateLimiter({ backend: rateLimitBackend, limit: config.rateLimit, windowMs: 60_000 });
   idempotency = new PostgresIdempotencyStore({ pool: databaseRuntime.persistence.pool, table: config.idempotencyTable, ttlMs: config.idempotencyTtlMs, leaseMs: config.idempotencyLeaseMs });
   await idempotency.init();
-  store = new AsyncBrainStore(databaseRuntime.persistence);
+  store = new AsyncBrainStore(databaseRuntime.persistence, { vectorStore });
   await store.ready;
 } else {
   store = new BrainStore();
@@ -43,7 +47,7 @@ const knowledge = new KnowledgeService(learning);
 const research = new ResearchEngine(knowledge, { allowHosts: process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST ? process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST.split(',').map(x => x.trim()).filter(Boolean) : undefined });
 const port = config.port;
 const apiKey = process.env.OMNI_BRAIN_API_KEY || '';
-const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true, postgres: Boolean(databaseRuntime) } });
+const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true, postgres: Boolean(databaseRuntime), vector_store: Boolean(vectorStore) } });
 let acceptingRequests = true;
 
 function json(res, status, body, requestId, idempotencyKey) {
@@ -168,4 +172,4 @@ const shutdown = () => {
 process.once('SIGTERM', shutdown);
 process.once('SIGINT', shutdown);
 if (process.env.NODE_ENV !== 'test') server.listen(port, () => console.log(`Omni Agent Brain listening on ${port}`));
-export { server, store, research, knowledge, learning, limiter, idempotency, observability, databaseRuntime, readiness };
+export { server, store, research, knowledge, learning, limiter, idempotency, vectorStore, observability, databaseRuntime, readiness };
