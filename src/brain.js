@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { JsonPersistence, assertPersistenceAdapter } from './persistence.js';
-import { retrieveMemories } from './retrieval.js';
+import { createEmbedding, DEFAULT_EMBEDDING_DIMENSIONS, isValidEmbedding } from './embeddings.js';
+import { VectorIndex } from './vector-retrieval.js';
 
 const STATUSES = new Set(['candidate', 'validated', 'promoted', 'rejected', 'deprecated']);
 const SECRET_KEYS = /api[_-]?key|token|secret|password|authorization|credential/i;
@@ -9,8 +10,11 @@ class MemoryPersistence { constructor() { this.snapshotValue = null; } load() { 
 function sanitizeMetadata(value) { if (!value || typeof value !== 'object' || Array.isArray(value)) return {}; return Object.fromEntries(Object.entries(value).map(([key, val]) => [key, SECRET_KEYS.test(key) ? '[REDACTED]' : val])); }
 
 export class BrainStore {
-  constructor(persistence) {
+  constructor(persistence, options = {}) {
     this.persistence = assertPersistenceAdapter(persistence || (process.env.NODE_ENV === 'test' ? new MemoryPersistence() : new JsonPersistence()));
+    this.embeddingDimensions = options.embeddingDimensions ?? DEFAULT_EMBEDDING_DIMENSIONS;
+    this.embed = options.embed || createEmbedding;
+    this.vectorIndex = new VectorIndex({ dimensions: this.embeddingDimensions, embed: this.embed });
     const saved = this.persistence.load();
     this.memories = new Map((saved?.memories || []).map(x => [x.id, x]));
     this.skills = new Map((saved?.skills || []).map(x => [x.id, x]));
@@ -18,15 +22,29 @@ export class BrainStore {
     this.audit = saved?.audit || [];
     this.auditHead = this.audit.at(-1)?.hash || 'GENESIS';
     if (!this.verifyAudit()) throw new Error('audit log integrity check failed');
+    this.#rebuildVectorIndex();
   }
   persist() { this.persistence.save(this.snapshot()); }
   remember(input) {
     if (!input?.content || typeof input.content !== 'string' || !input?.source || typeof input.source !== 'string') throw new Error('content and source are required strings');
     if (input.content.length > 100_000 || input.source.length > 10_000) throw new Error('content or source too large');
     const id = crypto.randomUUID(); const item = { id, type: input.type ?? 'semantic', content: input.content, source: input.source, sourceHash: sha256(input.source), confidence: clamp(input.confidence ?? 0.5), status: 'candidate', createdAt: new Date().toISOString(), lastValidatedAt: null, metadata: sanitizeMetadata(input.metadata) };
-    this.memories.set(id, item); this.record('memory.created', id, { sourceHash: item.sourceHash, confidence: item.confidence }); this.persist(); return structuredClone(item);
+    item.embedding = this.embed(`${item.content} ${item.source}`, this.embeddingDimensions);
+    if (!isValidEmbedding(item.embedding, this.embeddingDimensions)) throw new Error('invalid_embedding');
+    this.memories.set(id, item); this.vectorIndex.upsert(id, `${item.content} ${item.source}`, item.embedding); this.record('memory.created', id, { sourceHash: item.sourceHash, confidence: item.confidence }); this.persist(); return structuredClone(item);
   }
-  searchMemories(query, options = {}) { return retrieveMemories(this.memories.values(), query, options); }
+  searchMemories(query, options = {}) {
+    if (typeof query !== 'string' || !query.trim()) throw new Error('query is required');
+    const limit = Math.min(Math.max(Number(options.limit) || 5, 1), 50);
+    const minScore = Math.max(0, Math.min(1, Number(options.minScore) || 0));
+    const matches = this.vectorIndex.search(query, Math.max(limit * 3, 10), 0);
+    return matches
+      .map(match => this.memories.get(match.id) ? { ...this.memories.get(match.id), score: match.score * (0.5 + 0.5 * this.memories.get(match.id).confidence) } : null)
+      .filter(item => item && item.status !== 'rejected' && item.status !== 'deprecated' && item.score >= minScore)
+      .sort((a, b) => b.score - a.score || a.createdAt.localeCompare(b.createdAt))
+      .slice(0, limit)
+      .map(item => structuredClone(item));
+  }
   validateMemory(id, result) {
     const item = this.requireMemory(id); if (!result || typeof result.passed !== 'boolean') throw new Error('validation result must include passed');
     item.lastValidatedAt = new Date().toISOString(); item.confidence = clamp(result.confidence ?? item.confidence); item.status = result.passed ? 'validated' : 'rejected'; this.record('memory.validated', id, { passed: result.passed, confidence: item.confidence }); this.persist(); return structuredClone(item);
@@ -62,6 +80,16 @@ export class BrainStore {
   requireSkill(id) { const skill = this.skills.get(id); if (!skill) throw new Error(`skill not found: ${id}`); return skill; }
   record(event, subjectId, data = {}) { const at = new Date().toISOString(); const id = crypto.randomUUID(); const payload = { id, event, subjectId, data, at, previousHash: this.auditHead }; const hash = sha256(JSON.stringify(payload)); const entry = { ...payload, hash }; this.audit.push(entry); this.auditHead = hash; }
   verifyAudit() { let previousHash = 'GENESIS'; for (const entry of this.audit) { const { hash, ...payload } = entry; if (payload.previousHash !== previousHash || sha256(JSON.stringify(payload)) !== hash) return false; previousHash = hash; } return true; }
+  #rebuildVectorIndex() {
+    this.vectorIndex.clear();
+    for (const item of this.memories.values()) {
+      const embedding = isValidEmbedding(item.embedding, this.embeddingDimensions) ? item.embedding : this.embed(`${item.content} ${item.source}`, this.embeddingDimensions);
+      if (isValidEmbedding(embedding, this.embeddingDimensions)) {
+        item.embedding = embedding;
+        this.vectorIndex.upsert(item.id, `${item.content} ${item.source}`, embedding);
+      }
+    }
+  }
 }
 export function sha256(value) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
 export function clamp(value) { const n = Number(value); return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0; }
