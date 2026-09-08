@@ -51,4 +51,8 @@ export function createPostgresPersistence({ url = process.env.OMNI_BRAIN_DATABAS
 export async function runPostgresMigration(persistence) {
   await persistence.pool.query(`CREATE TABLE IF NOT EXISTS ${persistence.table} (id SMALLINT PRIMARY KEY CHECK (id = 1), schema_version INTEGER NOT NULL, state JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
   await persistence.pool.query(`CREATE INDEX IF NOT EXISTS ${persistence.table}_updated_at_idx ON ${persistence.table} (updated_at)`);
+  await persistence.pool.query('CREATE EXTENSION IF NOT EXISTS vector');
+  await persistence.pool.query('CREATE TABLE IF NOT EXISTS omni_brain_vectors (memory_id TEXT PRIMARY KEY, embedding vector(256) NOT NULL, memory JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
+  await persistence.pool.query('CREATE INDEX IF NOT EXISTS omni_brain_vectors_embedding_hnsw_idx ON omni_brain_vectors USING hnsw (embedding vector_cosine_ops)');
+  await persistence.pool.query('CREATE INDEX IF NOT EXISTS omni_brain_vectors_updated_at_idx ON omni_brain_vectors (updated_at)');
 }
