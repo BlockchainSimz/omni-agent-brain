@@ -8,6 +8,28 @@ class FakeAsyncPersistence {
   async save(snapshot) { this.snapshot = structuredClone(snapshot); this.saves += 1; }
 }
 
+class FakeLockedPersistence extends FakeAsyncPersistence {
+  constructor(snapshot = null) {
+    super(snapshot);
+    this.lock = Promise.resolve();
+  }
+
+  async withWriteLock(operation) {
+    const previous = this.lock;
+    let release;
+    this.lock = new Promise(resolve => { release = resolve; });
+    await previous;
+    try {
+      return await operation({
+        load: () => this.load(),
+        save: snapshot => this.save(snapshot)
+      });
+    } finally {
+      release();
+    }
+  }
+}
+
 test('async brain loads, persists, and reloads state', async () => {
   const persistence = new FakeAsyncPersistence();
   const first = new AsyncBrainStore(persistence);
@@ -33,6 +55,21 @@ test('serializes concurrent writes without losing audit entries', async () => {
   assert.equal(snapshot.memories.length, 3);
   assert.equal(snapshot.audit.length, 3);
   assert.equal(await brain.verifyAudit(), true);
+});
+
+test('distributed async writers reload inside the write lock instead of losing updates', async () => {
+  const persistence = new FakeLockedPersistence();
+  const first = new AsyncBrainStore(persistence);
+  const second = new AsyncBrainStore(persistence);
+  await Promise.all([
+    first.remember({ content: 'writer-one', source: 'test' }),
+    second.remember({ content: 'writer-two', source: 'test' })
+  ]);
+  const snapshot = await first.snapshot();
+  assert.equal(snapshot.memories.length, 2);
+  assert.deepEqual(new Set(snapshot.memories.map(memory => memory.content)), new Set(['writer-one', 'writer-two']));
+  assert.equal(snapshot.audit.length, 2);
+  assert.equal(await first.verifyAudit(), true);
 });
 
 test('rolls back in-memory state when persistence fails and permits a later write', async () => {
