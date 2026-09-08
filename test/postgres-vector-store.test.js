@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import postgres from 'postgres';
 import { PostgresVectorStore } from '../src/postgres-vector-store.js';
 
 function fakePool() {
@@ -44,4 +45,29 @@ test('postgres vector store syncs active memories and removes inactive ones', as
   assert.equal(await store.count(), 1);
   assert.ok(pool.rows.has('one'));
   assert.equal(pool.rows.has('rejected'), false);
+});
+
+test('postgres vector store persists and retrieves semantic memories with pgvector', { skip: !process.env.OMNI_BRAIN_DATABASE_URL }, async () => {
+  const sql = postgres(process.env.OMNI_BRAIN_DATABASE_URL);
+  const table = `omni_brain_vectors_test_${process.pid}`;
+  const pool = {
+    async query(text, params = []) {
+      return { rows: await sql.unsafe(text.replaceAll('omni_brain_vectors', table), params) };
+    }
+  };
+  const store = new PostgresVectorStore({ pool, table });
+  try {
+    await store.init();
+    await store.sync({ memories: [
+      { id: 'api', content: 'bounded retries for idempotent API requests', source: 'test', status: 'validated', confidence: 1 },
+      { id: 'hiking', content: 'mountain hiking checklist and river trail notes', source: 'test', status: 'validated', confidence: 1 }
+    ] });
+    const results = await store.search('API retry strategy', { limit: 2 });
+    assert.equal(results[0].id, 'api');
+    assert.ok(results[0].score > results[1].score);
+    assert.equal(await store.count(), 2);
+  } finally {
+    await sql.unsafe(`DROP TABLE IF EXISTS ${table}`);
+    await sql.end({ timeout: 5 });
+  }
 });
