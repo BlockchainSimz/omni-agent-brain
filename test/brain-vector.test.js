@@ -19,16 +19,17 @@ test('brain persists vector embeddings and retrieves relevant memories', () => {
 });
 
 test('brain vector retrieval excludes rejected and deprecated memories', () => {
-  const brain = new BrainStore(new MemoryPersistence());
+  const persistence = new MemoryPersistence();
+  const brain = new BrainStore(persistence);
   const rejected = brain.remember({ content: 'API security guidance', source: 'test', confidence: 1 });
   brain.validateMemory(rejected.id, { passed: false });
   const deprecated = brain.remember({ content: 'API security guidance', source: 'old test', confidence: 1 });
-  brain.validateMemory(deprecated.id, { passed: true });
-  const skill = brain.proposeSkill({ name: 'test-skill', definition: 'test' });
-  brain.promoteSkill(skill.id, { passed: true, score: 0.9, regressionRate: 0 });
-  brain.rollbackSkill(skill.id, 'replaced');
+  const snapshot = brain.snapshot();
+  snapshot.memories.find(item => item.id === deprecated.id).status = 'deprecated';
+  persistence.save(snapshot);
 
-  const results = brain.searchMemories('API security guidance', { limit: 10 });
+  const reloaded = new BrainStore(persistence);
+  const results = reloaded.searchMemories('API security guidance', { limit: 10 });
   assert.equal(results.some(item => item.id === rejected.id), false);
-  assert.equal(results.some(item => item.id === deprecated.id), true);
+  assert.equal(results.some(item => item.id === deprecated.id), false);
 });
