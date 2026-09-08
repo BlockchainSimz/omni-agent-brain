@@ -24,6 +24,28 @@ test('PostgreSQL persistence survives a real database round trip', { skip: !proc
   }
 });
 
+test('PostgreSQL persistence preserves concurrent writes across AsyncBrainStore instances', { skip: !process.env.OMNI_BRAIN_DATABASE_URL }, async () => {
+  const runtime = createPostgresPersistence();
+  try {
+    await runPostgresMigration(runtime.persistence);
+    await runtime.persistence.pool.query('DELETE FROM omni_brain_state WHERE id = 1');
+    const first = new AsyncBrainStore(runtime.persistence);
+    const second = new AsyncBrainStore(runtime.persistence);
+    await Promise.all([
+      first.remember({ content: 'postgres-writer-one', source: 'integration-test' }),
+      second.remember({ content: 'postgres-writer-two', source: 'integration-test' })
+    ]);
+    const snapshot = await first.snapshot();
+    assert.equal(snapshot.memories.length, 2);
+    assert.deepEqual(new Set(snapshot.memories.map(memory => memory.content)), new Set(['postgres-writer-one', 'postgres-writer-two']));
+    assert.equal(snapshot.audit.length, 2);
+    assert.equal(await first.verifyAudit(), true);
+  } finally {
+    await runtime.persistence.pool.query('DELETE FROM omni_brain_state WHERE id = 1').catch(() => {});
+    await runtime.close();
+  }
+});
+
 test('PostgreSQL runtime requires an explicit connection URL', () => {
   assert.throws(() => createPostgresPersistence({ url: '' }), /missing_postgres_database_url/);
 });
