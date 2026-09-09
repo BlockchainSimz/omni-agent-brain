@@ -4,7 +4,7 @@ A provenance-aware foundation for a self-improving AI agent brain.
 
 ## Current status
 
-**v0.4.0 production foundation — Phase 11 persistent vector retrieval.** The repository contains an executable core, hardened HTTP API, PostgreSQL persistence, async concurrency controls, provenance tracking, guarded skill promotion, rollback support, authentication, rate limiting, idempotency, production Docker support, deterministic semantic retrieval, and PostgreSQL/pgvector-backed vector search.
+**v0.5.0 production foundation — Phase 12 typed memory stores.** The repository contains an executable core, hardened HTTP API, PostgreSQL persistence, async concurrency controls, provenance tracking, guarded skill promotion, rollback support, authentication, rate limiting, idempotency, production Docker support, deterministic semantic retrieval, PostgreSQL/pgvector-backed vector search, and separated episodic, semantic, procedural, and working-memory abstractions.
 
 The service is a hardened foundation, not a complete autonomous AI platform. External learning, model orchestration, production-grade embedding providers, sandboxed execution, and distributed infrastructure remain roadmap work.
 
@@ -21,6 +21,17 @@ Before exposing the service to real traffic:
 - Treat `/health` as the container liveness check and `/ready` as the service readiness endpoint.
 - Back up and validate persistent storage before enabling production data workloads.
 
+## Memory architecture
+
+The brain now exposes explicit memory classes:
+
+- **Episodic** — time-bound observations and events.
+- **Semantic** — durable facts and validated knowledge.
+- **Procedural** — knowledge tied to an explicit skill identifier.
+- **Working** — temporary context with a bounded TTL and deterministic expiry/pruning.
+
+All memory classes retain the existing provenance, confidence, validation, embedding, audit, and persistence contracts. Working memories are excluded from retrieval after expiry and from PostgreSQL vector synchronization/search after expiry.
+
 ## Semantic retrieval
 
 Memories carry deterministic 256-dimensional embeddings generated from hashed word, word-bigram, and character-trigram features. PostgreSQL deployments persist active memory embeddings in a `pgvector` table and use cosine-distance search; the service falls back to the in-memory retrieval implementation if the vector backend is temporarily unavailable. The vector index is HNSW-backed for scalable approximate nearest-neighbor search. citeturn0search0
@@ -33,10 +44,14 @@ The embedding implementation is intentionally dependency-free and deterministic.
 External observations
         |
         v
-  Provenance memory ---> embedding ---> pgvector/HNSW ---> semantic retrieval
-        |                                      |
-        v                                      v
- validation ---> trusted knowledge       ranked context
+  Episodic / Semantic / Working memory
+        |             |
+        |             +---- TTL expiry/pruning
+        v
+     embedding ---> pgvector/HNSW ---> semantic retrieval
+        |
+        v
+ validated knowledge ---> Procedural memory ---> skill registry
         |
  Candidate skill ---> evaluation ---> promotion ---> versioning
                               |                         |
@@ -48,6 +63,8 @@ External observations
 ## Implemented
 
 - Candidate memory with source provenance and source hashing
+- Explicit episodic, semantic, procedural, and working-memory APIs
+- Working-memory TTL enforcement and pruning
 - Confidence and validation state
 - Deterministic vector embeddings and cosine-similarity retrieval
 - PostgreSQL/pgvector persistent vector storage and HNSW retrieval
@@ -123,7 +140,7 @@ The image runs as the non-root `node` user and exposes a Docker healthcheck agai
 
 1. ~~Persistent PostgreSQL storage and migrations~~ — async integration completed
 2. ~~Vector/semantic retrieval layer~~ — persistent pgvector integration completed
-3. Episodic, semantic, procedural and working-memory stores
+3. ~~Episodic, semantic, procedural and working-memory stores~~ — typed memory layer completed
 4. Source ingestion adapters for GitHub and approved knowledge sources
 5. Evaluation/benchmark service with reproducible datasets
 6. Sandboxed code/tool execution
