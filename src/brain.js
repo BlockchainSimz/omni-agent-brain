@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { JsonPersistence, assertPersistenceAdapter } from './persistence.js';
 import { createEmbedding, DEFAULT_EMBEDDING_DIMENSIONS, isValidEmbedding } from './embeddings.js';
 import { VectorIndex } from './vector-retrieval.js';
+import { MemoryStoreManager } from './memory-stores.js';
 
 const STATUSES = new Set(['candidate', 'validated', 'promoted', 'rejected', 'deprecated']);
 const SECRET_KEYS = /api[_-]?key|token|secret|password|authorization|credential/i;
@@ -23,6 +24,7 @@ export class BrainStore {
     this.auditHead = this.audit.at(-1)?.hash || 'GENESIS';
     if (!this.verifyAudit()) throw new Error('audit log integrity check failed');
     this.#rebuildVectorIndex();
+    this.memoryStores = new MemoryStoreManager(this);
   }
   persist() { this.persistence.save(this.snapshot()); }
   remember(input) {
@@ -33,14 +35,22 @@ export class BrainStore {
     if (!isValidEmbedding(item.embedding, this.embeddingDimensions)) throw new Error('invalid_embedding');
     this.memories.set(id, item); this.vectorIndex.upsert(id, `${item.content} ${item.source}`, item.embedding); this.record('memory.created', id, { sourceHash: item.sourceHash, confidence: item.confidence }); this.persist(); return structuredClone(item);
   }
+  rememberEpisodic(input) { return this.memoryStores.rememberEpisodic(input); }
+  rememberSemantic(input) { return this.memoryStores.rememberSemantic(input); }
+  rememberProcedural(input) { return this.memoryStores.rememberProcedural(input); }
+  rememberWorking(input, options) { return this.memoryStores.rememberWorking(input, options); }
+  listMemories(type, options) { return this.memoryStores.list(type, options); }
+  searchTypedMemories(type, query, options) { return this.memoryStores.search(type, query, options); }
+  pruneWorkingMemory() { return this.memoryStores.pruneWorking(); }
   searchMemories(query, options = {}) {
     if (typeof query !== 'string' || !query.trim()) throw new Error('query is required');
     const limit = Math.min(Math.max(Number(options.limit) || 5, 1), 50);
     const minScore = Math.max(0, Math.min(1, Number(options.minScore) || 0));
     const matches = this.vectorIndex.search(query, Math.max(limit * 3, 10), 0);
+    const now = Date.now();
     return matches
       .map(match => this.memories.get(match.id) ? { ...this.memories.get(match.id), score: match.score * (0.5 + 0.5 * this.memories.get(match.id).confidence) } : null)
-      .filter(item => item && item.status !== 'rejected' && item.status !== 'deprecated' && item.score >= minScore)
+      .filter(item => item && item.status !== 'rejected' && item.status !== 'deprecated' && !(item.type === 'working' && Date.parse(item.metadata?.expiresAt || '') <= now) && item.score >= minScore)
       .sort((a, b) => b.score - a.score || a.createdAt.localeCompare(b.createdAt))
       .slice(0, limit)
       .map(item => structuredClone(item));
