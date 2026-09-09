@@ -4,9 +4,23 @@ A provenance-aware foundation for a self-improving AI agent brain.
 
 ## Current status
 
-**v0.6.0 production foundation — Phase 13 source ingestion.** The repository contains an executable core, hardened HTTP API, PostgreSQL persistence, async concurrency controls, provenance tracking, guarded skill promotion, rollback support, authentication, rate limiting, idempotency, production Docker support, deterministic semantic retrieval, PostgreSQL/pgvector-backed vector search, separated episodic/semantic/procedural/working memory, and controlled source-ingestion adapters.
+**v0.7.0 production foundation — Phase 14 evaluation/benchmark service.** The repository contains an executable core, hardened HTTP API, PostgreSQL persistence, async concurrency controls, provenance tracking, guarded skill promotion, rollback support, authentication, rate limiting, idempotency, production Docker support, deterministic semantic retrieval, PostgreSQL/pgvector-backed vector search, separated episodic/semantic/procedural/working memory, controlled source-ingestion adapters, and reproducible evaluation infrastructure.
 
 The service is a hardened foundation, not a complete autonomous AI platform. External learning, model orchestration, production-grade embedding providers, sandboxed execution, and distributed infrastructure remain roadmap work.
+
+## Evaluation and benchmarks
+
+Phase 14 adds a deterministic evaluation service for reproducible capability testing:
+
+- Dataset definitions have explicit IDs, versions, bounded case counts, and deterministic SHA-256 dataset hashes.
+- Cases support exact, substring, regular-expression, and numeric-tolerance matchers.
+- Evaluations return per-case results plus aggregate score, pass threshold, and regression rate.
+- Baselines can be supplied to detect previously passing cases that regress.
+- Evaluation IDs are deterministic for the same dataset and outputs.
+- Evaluation is intentionally separate from model execution: callers supply outputs, keeping the benchmark engine deterministic and safe to run in CI.
+- The authenticated HTTP endpoint `/v1/evaluations/run` exposes the benchmark service through the same request-size, authentication, rate-limit, and idempotency controls as other write endpoints.
+
+A benchmark can therefore be committed as a reproducible dataset and used as an objective gate before a candidate capability is promoted.
 
 ## Source ingestion
 
@@ -22,7 +36,7 @@ Phase 13 adds a dedicated GitHub source adapter for approved knowledge ingestion
 - Expose authenticated HTTP endpoints at `/v1/sources/github/file` and `/v1/sources/github/batch`.
 - Use `GITHUB_TOKEN` or `OMNI_BRAIN_GITHUB_TOKEN` when authenticated GitHub API access is configured; public repository reads can operate without a token subject to GitHub API limits.
 
-The GitHub REST API supports repository-content retrieval and commit metadata through documented endpoints. citeturn0search0turn0search2
+The GitHub REST API supports repository-content retrieval and documented rate-limit controls. citeturn0search0turn0search9
 
 ### Example request
 
@@ -80,6 +94,9 @@ The embedding implementation is intentionally dependency-free and deterministic.
 - Vector synchronization after persistent brain writes with graceful fallback
 - GitHub source ingestion with commit-level provenance
 - Candidate knowledge ingestion through the central learning pipeline
+- Reproducible evaluation datasets and deterministic benchmark scoring
+- Exact, contains, regex, and numeric-tolerance benchmark matchers
+- Baseline regression detection for previously passing cases
 - Candidate skill registry
 - Promotion gates: passing evaluation, score >= 0.8, zero regression rate
 - Explicit rollback/deprecation
@@ -129,6 +146,7 @@ POST /v1/research/url
 POST /v1/research/batch
 POST /v1/sources/github/file
 POST /v1/sources/github/batch
+POST /v1/evaluations/run
 POST /v1/skills
 POST /v1/skills/:id/promote
 POST /v1/skills/:id/rollback
@@ -154,7 +172,7 @@ The image runs as the non-root `node` user and exposes a Docker healthcheck agai
 2. ~~Vector/semantic retrieval layer~~ — persistent pgvector integration completed
 3. ~~Episodic, semantic, procedural and working-memory stores~~ — typed memory layer completed
 4. ~~Source ingestion adapters for GitHub and approved knowledge sources~~ — GitHub adapter completed; additional approved providers remain
-5. Evaluation/benchmark service with reproducible datasets
+5. ~~Evaluation/benchmark service with reproducible datasets~~ — deterministic benchmark engine and regression detection completed
 6. Sandboxed code/tool execution
 7. Model/provider abstraction and cost controls
 8. ~~Distributed observability, rate limiting and idempotency~~ — foundation completed
