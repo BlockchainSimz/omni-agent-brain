@@ -12,6 +12,7 @@ import { LearningPipeline } from './learning.js';
 import { KnowledgeService } from './knowledge.js';
 import { ResearchEngine } from './research.js';
 import { GitHubSourceAdapter } from './github-source.js';
+import { EvaluationService } from './evaluation.js';
 import { consolidate, detectConflicts } from './consolidation.js';
 import { validateRequest, validateHttpRequest, RateLimiter, IdempotencyStore, createRequestContext, errorResponse } from './service-hardening.js';
 import { RuntimeObservability } from './runtime-observability.js';
@@ -47,9 +48,10 @@ const learning = new LearningPipeline(store);
 const knowledge = new KnowledgeService(learning);
 const research = new ResearchEngine(knowledge, { allowHosts: process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST ? process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST.split(',').map(x => x.trim()).filter(Boolean) : undefined });
 const github = new GitHubSourceAdapter({ token: process.env.GITHUB_TOKEN || process.env.OMNI_BRAIN_GITHUB_TOKEN });
+const evaluations = new EvaluationService();
 const port = config.port;
 const apiKey = process.env.OMNI_BRAIN_API_KEY || '';
-const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true, github: true, postgres: Boolean(databaseRuntime), vector_store: Boolean(vectorStore) } });
+const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true, github: true, evaluations: true, postgres: Boolean(databaseRuntime), vector_store: Boolean(vectorStore) } });
 let acceptingRequests = true;
 
 function json(res, status, body, requestId, idempotencyKey) {
@@ -111,8 +113,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/v1/research/batch') { const value = await readBody(); return json(res, 201, await runWrite(() => research.ingestUrls(value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/sources/github/file') { const value = await readBody(); return json(res, 201, await runWrite(() => github.ingestFile(validateRequest(value, { required: ['repository', 'path'] }), knowledge)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/sources/github/batch') { const value = await readBody(); return json(res, 201, await runWrite(() => github.ingestFiles(value, knowledge)), context.requestId, idempotencyKey); }
-    if (req.method === 'GET' && url.pathname === '/v1/knowledge/conflicts') return json(res, 200, { conflicts: detectConflicts((await store.snapshot()).memories) }, context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/knowledge/conflicts') return json(res, 200, { conflicts: detectConflicts((await store.snapshot()).memories }, context.requestId);
     if (req.method === 'GET' && url.pathname === '/v1/knowledge/consolidation') return json(res, 200, consolidate((await store.snapshot()).memories), context.requestId);
+    if (req.method === 'POST' && url.pathname === '/v1/evaluations/run') {
+      const value = await readBody();
+      return json(res, 200, await runWrite(() => evaluations.run(value.dataset, value.outputs, { baseline: value.baseline, passThreshold: value.passThreshold, version: value.version })), context.requestId, idempotencyKey);
+    }
     if (req.method === 'POST' && url.pathname === '/v1/skills') { const value = await readBody(); return json(res, 201, await runWrite(() => store.proposeSkill(value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/promote')) { const value = await readBody(); return json(res, 200, await runWrite(() => store.promoteSkill(url.pathname.split('/')[3], value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/rollback')) { const value = await readBody(); return json(res, 200, await runWrite(() => store.rollbackSkill(url.pathname.split('/')[3], value.reason)), context.requestId, idempotencyKey); }
@@ -131,4 +137,4 @@ cleanup.unref();
 const shutdown = () => { if (!acceptingRequests) return; acceptingRequests = false; clearInterval(cleanup); const forceExit = setTimeout(() => process.exit(1), 10_000); forceExit.unref(); server.close(async () => { try { if (databaseRuntime) await databaseRuntime.close(); clearTimeout(forceExit); process.exit(0); } catch { clearTimeout(forceExit); process.exit(1); } }); };
 process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
 if (process.env.NODE_ENV !== 'test') server.listen(port, () => console.log(`Omni Agent Brain listening on ${port}`));
-export { server, store, research, github, knowledge, learning, limiter, idempotency, vectorStore, observability, databaseRuntime, readiness };
+export { server, store, research, github, knowledge, learning, evaluations, limiter, idempotency, vectorStore, observability, databaseRuntime, readiness };
