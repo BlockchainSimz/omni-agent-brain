@@ -42,7 +42,9 @@ function getPath(value, path) {
 }
 
 function byteLength(value) {
-  return Buffer.byteLength(JSON.stringify(value));
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error('tool_value_not_serializable');
+  return Buffer.byteLength(serialized, 'utf8');
 }
 
 function boundedOptions(options = {}) {
@@ -59,11 +61,11 @@ function boundedOptions(options = {}) {
   return normalized;
 }
 
-function normalizeCall(call) {
+function normalizeCall(call, maxInputBytes) {
   if (!call || typeof call !== 'object' || Array.isArray(call)) throw new Error('invalid_tool_call');
   if (typeof call.tool !== 'string' || !ALLOWED_TOOLS.has(call.tool)) throw new Error(`tool_not_allowed:${call.tool || ''}`);
   const input = call.input === undefined ? {} : structuredClone(call.input);
-  if (byteLength(input) > DEFAULTS.maxInputBytes) throw new Error('tool_input_too_large');
+  if (byteLength(input) > maxInputBytes) throw new Error('tool_input_too_large');
   return { tool: call.tool, input };
 }
 
@@ -78,7 +80,7 @@ export class SafeToolExecutor {
 
   async execute(call, metadata = {}) {
     const startedAt = Date.now();
-    const normalized = normalizeCall(call);
+    const normalized = normalizeCall(call, this.options.maxInputBytes);
     const result = await this.#executeOne(normalized, this.options.timeoutMs);
     const output = structuredClone(result);
     if (byteLength(output) > this.options.maxOutputBytes) throw new Error('tool_output_too_large');
