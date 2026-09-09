@@ -113,12 +113,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/v1/research/batch') { const value = await readBody(); return json(res, 201, await runWrite(() => research.ingestUrls(value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/sources/github/file') { const value = await readBody(); return json(res, 201, await runWrite(() => github.ingestFile(validateRequest(value, { required: ['repository', 'path'] }), knowledge)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/sources/github/batch') { const value = await readBody(); return json(res, 201, await runWrite(() => github.ingestFiles(value, knowledge)), context.requestId, idempotencyKey); }
-    if (req.method === 'GET' && url.pathname === '/v1/knowledge/conflicts') return json(res, 200, { conflicts: detectConflicts((await store.snapshot()).memories }, context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/knowledge/conflicts') return json(res, 200, { conflicts: detectConflicts((await store.snapshot()).memories) }, context.requestId);
     if (req.method === 'GET' && url.pathname === '/v1/knowledge/consolidation') return json(res, 200, consolidate((await store.snapshot()).memories), context.requestId);
-    if (req.method === 'POST' && url.pathname === '/v1/evaluations/run') {
-      const value = await readBody();
-      return json(res, 200, await runWrite(() => evaluations.run(value.dataset, value.outputs, { baseline: value.baseline, passThreshold: value.passThreshold, version: value.version })), context.requestId, idempotencyKey);
-    }
+    if (req.method === 'POST' && url.pathname === '/v1/evaluations/run') { const value = await readBody(); return json(res, 200, await runWrite(() => evaluations.run(value.dataset, value.outputs, { baseline: value.baseline, passThreshold: value.passThreshold, version: value.version })), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/skills') { const value = await readBody(); return json(res, 201, await runWrite(() => store.proposeSkill(value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/promote')) { const value = await readBody(); return json(res, 200, await runWrite(() => store.promoteSkill(url.pathname.split('/')[3], value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/rollback')) { const value = await readBody(); return json(res, 200, await runWrite(() => store.rollbackSkill(url.pathname.split('/')[3], value.reason)), context.requestId, idempotencyKey); }
