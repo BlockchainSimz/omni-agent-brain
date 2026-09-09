@@ -61,10 +61,14 @@ export class PostgresVectorStore {
     const boundedMinScore = Math.max(0, Math.min(1, Number(minScore) || 0));
     const embedding = this.embed(query, this.dimensions);
     const result = await this.pool.query(
-      `SELECT memory, 1 - (embedding <=> $1::vector) AS score FROM ${this.table} WHERE 1 - (embedding <=> $1::vector) >= $2 ORDER BY embedding <=> $1::vector LIMIT $3`,
+      `SELECT memory, memory->>'id' AS memory_id, 1 - (embedding <=> $1::vector) AS score FROM ${this.table} WHERE 1 - (embedding <=> $1::vector) >= $2 ORDER BY embedding <=> $1::vector LIMIT $3`,
       [vectorLiteral(embedding), boundedMinScore, boundedLimit]
     );
-    return result.rows.map(row => ({ ...decodeMemory(row.memory), score: Number(row.score) }));
+    return result.rows.map(row => {
+      const memory = decodeMemory(row.memory);
+      if (!memory.id && row.memory_id) memory.id = row.memory_id;
+      return { ...memory, score: Number(row.score) };
+    });
   }
 
   async count() {
