@@ -47,6 +47,22 @@ test('PostgreSQL persistence preserves concurrent writes across AsyncBrainStore 
   }
 });
 
+test('PostgreSQL startup migrations serialize safely across concurrent runtimes', { skip: !process.env.OMNI_BRAIN_DATABASE_URL }, async () => {
+  const first = createPostgresPersistence();
+  const second = createPostgresPersistence();
+  try {
+    await Promise.all([
+      runPostgresMigration(first.persistence),
+      runPostgresMigration(second.persistence)
+    ]);
+    const result = await first.persistence.pool.query("SELECT extname FROM pg_extension WHERE extname = 'vector'");
+    assert.equal(result.rows.length, 1);
+  } finally {
+    await first.close();
+    await second.close();
+  }
+});
+
 test('PostgreSQL runtime requires an explicit connection URL', () => {
   assert.throws(() => createPostgresPersistence({ url: '' }), /missing_postgres_database_url/);
 });
