@@ -48,7 +48,12 @@ export class PostgresVectorStore {
   }
 
   async sync(snapshot, executor = this.pool) {
-    const memories = (snapshot?.memories || []).filter(memory => memory.status !== 'rejected' && memory.status !== 'deprecated');
+    const now = Date.now();
+    const memories = (snapshot?.memories || []).filter(memory => {
+      if (memory.status === 'rejected' || memory.status === 'deprecated') return false;
+      if (memory.type === 'working' && Date.parse(memory.metadata?.expiresAt || '') <= now) return false;
+      return true;
+    });
     const activeIds = new Set(memories.map(memory => memory.id));
     for (const memory of memories) await this.upsert(memory, executor);
     if (activeIds.size === 0) await executor.query(`DELETE FROM ${this.table}`);
@@ -61,7 +66,7 @@ export class PostgresVectorStore {
     const boundedMinScore = Math.max(0, Math.min(1, Number(minScore) || 0));
     const embedding = this.embed(query, this.dimensions);
     const result = await this.pool.query(
-      `SELECT memory, memory->>'id' AS memory_id, 1 - (embedding <=> $1::vector) AS score FROM ${this.table} WHERE 1 - (embedding <=> $1::vector) >= $2 ORDER BY embedding <=> $1::vector LIMIT $3`,
+      `SELECT memory, memory->>'id' AS memory_id, 1 - (embedding <=> $1::vector) AS score FROM ${this.table} WHERE (memory->>'type' IS DISTINCT FROM 'working' OR NULLIF(memory->'metadata'->>'expiresAt', '') IS NULL OR (memory->'metadata'->>'expiresAt')::timestamptz > NOW()) AND 1 - (embedding <=> $1::vector) >= $2 ORDER BY embedding <=> $1::vector LIMIT $3`,
       [vectorLiteral(embedding), boundedMinScore, boundedLimit]
     );
     return result.rows.map(row => {
