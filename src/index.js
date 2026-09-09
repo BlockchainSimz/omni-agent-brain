@@ -13,6 +13,7 @@ import { KnowledgeService } from './knowledge.js';
 import { ResearchEngine } from './research.js';
 import { GitHubSourceAdapter } from './github-source.js';
 import { EvaluationService } from './evaluation.js';
+import { SafeToolExecutor } from './safe-executor.js';
 import { consolidate, detectConflicts } from './consolidation.js';
 import { validateRequest, validateHttpRequest, RateLimiter, IdempotencyStore, createRequestContext, errorResponse } from './service-hardening.js';
 import { RuntimeObservability } from './runtime-observability.js';
@@ -49,9 +50,10 @@ const knowledge = new KnowledgeService(learning);
 const research = new ResearchEngine(knowledge, { allowHosts: process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST ? process.env.OMNI_BRAIN_RESEARCH_ALLOWLIST.split(',').map(x => x.trim()).filter(Boolean) : undefined });
 const github = new GitHubSourceAdapter({ token: process.env.GITHUB_TOKEN || process.env.OMNI_BRAIN_GITHUB_TOKEN });
 const evaluations = new EvaluationService();
+const tools = new SafeToolExecutor();
 const port = config.port;
 const apiKey = process.env.OMNI_BRAIN_API_KEY || '';
-const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true, github: true, evaluations: true, postgres: Boolean(databaseRuntime), vector_store: Boolean(vectorStore) } });
+const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true, github: true, evaluations: true, safe_executor: true, postgres: Boolean(databaseRuntime), vector_store: Boolean(vectorStore) } });
 let acceptingRequests = true;
 
 function json(res, status, body, requestId, idempotencyKey) {
@@ -104,6 +106,7 @@ const server = http.createServer(async (req, res) => {
     const readBody = async () => { if (input === undefined) input = await body(req); return input; };
     const runWrite = async operationFn => (!isWrite || !idempotencyKey ? operationFn() : idempotency.run(idempotencyKey, { method: req.method, path: url.pathname, payload: input }, operationFn));
     if (req.method === 'GET' && url.pathname === '/v1/snapshot') return json(res, 200, await store.snapshot(), context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/tools') return json(res, 200, { tools: tools.listTools() }, context.requestId);
     if (req.method === 'GET' && url.pathname === '/v1/memories/search') return json(res, 200, { results: await store.searchMemories(url.searchParams.get('q') || '', { limit: url.searchParams.get('limit'), minScore: url.searchParams.get('minScore') }) }, context.requestId);
     if (req.method === 'POST' && url.pathname === '/v1/memories') { const value = await readBody(); return json(res, 201, await runWrite(() => store.remember(validateRequest(value, { required: ['content'] }))), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/memories/') && url.pathname.endsWith('/validate')) { const value = await readBody(); return json(res, 200, await runWrite(() => store.validateMemory(url.pathname.split('/')[3], value)), context.requestId, idempotencyKey); }
@@ -116,6 +119,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/v1/knowledge/conflicts') return json(res, 200, { conflicts: detectConflicts((await store.snapshot()).memories) }, context.requestId);
     if (req.method === 'GET' && url.pathname === '/v1/knowledge/consolidation') return json(res, 200, consolidate((await store.snapshot()).memories), context.requestId);
     if (req.method === 'POST' && url.pathname === '/v1/evaluations/run') { const value = await readBody(); return json(res, 200, await runWrite(() => evaluations.run(value.dataset, value.outputs, { baseline: value.baseline, passThreshold: value.passThreshold, version: value.version })), context.requestId, idempotencyKey); }
+    if (req.method === 'POST' && url.pathname === '/v1/tools/execute') { const value = await readBody(); return json(res, 200, await runWrite(() => tools.execute(value, { source: 'api' })), context.requestId, idempotencyKey); }
+    if (req.method === 'POST' && url.pathname === '/v1/tools/execute-batch') { const value = await readBody(); return json(res, 200, await runWrite(() => tools.executeBatch(value.calls, { source: 'api' })), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/skills') { const value = await readBody(); return json(res, 201, await runWrite(() => store.proposeSkill(value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/promote')) { const value = await readBody(); return json(res, 200, await runWrite(() => store.promoteSkill(url.pathname.split('/')[3], value)), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/skills/') && url.pathname.endsWith('/rollback')) { const value = await readBody(); return json(res, 200, await runWrite(() => store.rollbackSkill(url.pathname.split('/')[3], value.reason)), context.requestId, idempotencyKey); }
@@ -134,4 +139,4 @@ cleanup.unref();
 const shutdown = () => { if (!acceptingRequests) return; acceptingRequests = false; clearInterval(cleanup); const forceExit = setTimeout(() => process.exit(1), 10_000); forceExit.unref(); server.close(async () => { try { if (databaseRuntime) await databaseRuntime.close(); clearTimeout(forceExit); process.exit(0); } catch { clearTimeout(forceExit); process.exit(1); } }); };
 process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
 if (process.env.NODE_ENV !== 'test') server.listen(port, () => console.log(`Omni Agent Brain listening on ${port}`));
-export { server, store, research, github, knowledge, learning, evaluations, limiter, idempotency, vectorStore, observability, databaseRuntime, readiness };
+export { server, store, research, github, knowledge, learning, evaluations, tools, limiter, idempotency, vectorStore, observability, databaseRuntime, readiness };
