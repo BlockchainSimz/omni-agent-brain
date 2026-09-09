@@ -49,17 +49,28 @@ export function createPostgresPersistence({ url = process.env.OMNI_BRAIN_DATABAS
   };
 }
 
+async function applyMigration(query, table) {
+  await query('CREATE TABLE IF NOT EXISTS ' + table + ' (id SMALLINT PRIMARY KEY CHECK (id = 1), schema_version INTEGER NOT NULL, state JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
+  await query('CREATE INDEX IF NOT EXISTS ' + table + '_updated_at_idx ON ' + table + ' (updated_at)');
+  await query('CREATE EXTENSION IF NOT EXISTS vector');
+  await query('CREATE TABLE IF NOT EXISTS omni_brain_vectors (memory_id TEXT PRIMARY KEY, embedding vector(256) NOT NULL, memory JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
+  await query('CREATE INDEX IF NOT EXISTS omni_brain_vectors_embedding_hnsw_idx ON omni_brain_vectors USING hnsw (embedding vector_cosine_ops)');
+  await query('CREATE INDEX IF NOT EXISTS omni_brain_vectors_updated_at_idx ON omni_brain_vectors (updated_at)');
+}
+
 export async function runPostgresMigration(persistence) {
+  if (typeof persistence.pool.transaction !== 'function') {
+    // Lightweight/mock pools used by unit tests may expose only query().
+    // Real runtime pools always provide transaction(), which keeps migrations atomic.
+    await applyMigration((text, params) => persistence.pool.query(text, params), persistence.table);
+    return;
+  }
+
   await persistence.pool.transaction(async tx => {
     // Serialize startup migrations across concurrent application instances.
     // The transaction-scoped advisory lock is released automatically on commit/rollback.
     await tx.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_LOCK_KEY]);
-    await tx.query(`CREATE TABLE IF NOT EXISTS ${persistence.table} (id SMALLINT PRIMARY KEY CHECK (id = 1), schema_version INTEGER NOT NULL, state JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
-    await tx.query(`CREATE INDEX IF NOT EXISTS ${persistence.table}_updated_at_idx ON ${persistence.table} (updated_at)`);
-    await tx.query('CREATE EXTENSION IF NOT EXISTS vector');
-    await tx.query('CREATE TABLE IF NOT EXISTS omni_brain_vectors (memory_id TEXT PRIMARY KEY, embedding vector(256) NOT NULL, memory JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
-    await tx.query('CREATE INDEX IF NOT EXISTS omni_brain_vectors_embedding_hnsw_idx ON omni_brain_vectors USING hnsw (embedding vector_cosine_ops)');
-    await tx.query('CREATE INDEX IF NOT EXISTS omni_brain_vectors_updated_at_idx ON omni_brain_vectors (updated_at)');
+    await applyMigration((text, params) => tx.query(text, params), persistence.table);
   });
 }
 
