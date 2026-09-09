@@ -6,6 +6,12 @@ function vectorLiteral(vector) {
   return `[${vector.map(Number).join(',')}]`;
 }
 
+function decodeMemory(value) {
+  if (typeof value === 'string') return JSON.parse(value);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_stored_memory');
+  return value;
+}
+
 export class PostgresVectorStore {
   constructor({ pool, table = 'omni_brain_vectors', dimensions = DEFAULT_EMBEDDING_DIMENSIONS, embed = createEmbedding } = {}) {
     if (!pool || typeof pool.query !== 'function') throw new Error('invalid_postgres_pool');
@@ -58,7 +64,7 @@ export class PostgresVectorStore {
       `SELECT memory, 1 - (embedding <=> $1::vector) AS score FROM ${this.table} WHERE 1 - (embedding <=> $1::vector) >= $2 ORDER BY embedding <=> $1::vector LIMIT $3`,
       [vectorLiteral(embedding), boundedMinScore, boundedLimit]
     );
-    return result.rows.map(row => ({ ...row.memory, score: Number(row.score) }));
+    return result.rows.map(row => ({ ...decodeMemory(row.memory), score: Number(row.score) }));
   }
 
   async count() {
