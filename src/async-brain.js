@@ -74,12 +74,33 @@ export class AsyncBrainStore {
   }
 
   async remember(input) { return this.#write(brain => brain.remember(input)); }
+  async rememberEpisodic(input) { return this.#write(brain => brain.rememberEpisodic(input)); }
+  async rememberSemantic(input) { return this.#write(brain => brain.rememberSemantic(input)); }
+  async rememberProcedural(input) { return this.#write(brain => brain.rememberProcedural(input)); }
+  async rememberWorking(input, options) { return this.#write(brain => brain.rememberWorking(input, options)); }
+  async pruneWorkingMemory() { return this.#write(brain => brain.pruneWorkingMemory()); }
   async validateMemory(id, result) { return this.#write(brain => brain.validateMemory(id, result)); }
   async beginExecution(idempotencyKey, metadata = {}) { return this.#write(brain => brain.beginExecution(idempotencyKey, metadata)); }
   async completeExecution(idempotencyKey, result) { return this.#write(brain => brain.completeExecution(idempotencyKey, result)); }
   async proposeSkill(input) { return this.#write(brain => brain.proposeSkill(input)); }
   async promoteSkill(id, evaluation) { return this.#write(brain => brain.promoteSkill(id, evaluation)); }
   async rollbackSkill(id, reason) { return this.#write(brain => brain.rollbackSkill(id, reason)); }
+
+  async listMemories(type, options) {
+    await this.ready;
+    return this.brain.listMemories(type, options);
+  }
+
+  async searchTypedMemories(type, query, options) {
+    await this.ready;
+    if (this.vectorStore) {
+      try {
+        const results = await this.vectorStore.search(query, options);
+        return results.filter(item => item.type === type);
+      } catch {}
+    }
+    return this.brain.searchTypedMemories(type, query, options);
+  }
 
   async searchMemories(query, options = {}) {
     await this.ready;
