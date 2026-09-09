@@ -33,7 +33,7 @@ test('working memory expires deterministically and can be pruned', () => {
   assert.equal(manager.list(MEMORY_TYPES.WORKING).length, 0);
   assert.equal(manager.list(MEMORY_TYPES.WORKING, { includeExpired: true }).length, 1);
   assert.equal(manager.pruneWorking(), 1);
-  assert.equal(store.requireMemory(item.id), undefined);
+  assert.throws(() => store.requireMemory(item.id), /memory not found/);
 });
 
 test('rejects invalid procedural and working-memory configuration', () => {
