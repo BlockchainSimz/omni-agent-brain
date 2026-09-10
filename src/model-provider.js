@@ -1,64 +1,75 @@
 import crypto from 'node:crypto';
 
-const NAME = /^[a-z][a-z0-9._-]{1,63}$/;
-const DEFAULT_LIMITS = Object.freeze({ maxInputTokens: 8_192, maxOutputTokens: 2_048, maxRequestCostUsd: 1, dailyBudgetUsd: 10, providerTimeoutMs: 30_000 });
+const DEFAULT_LIMITS = Object.freeze({
+  maxInputTokens: 8192,
+  maxOutputTokens: 2048,
+  maxRequestCostUsd: 1,
+  dailyBudgetUsd: 10,
+  providerTimeoutMs: 30000
+});
 
-function finiteNonNegative(value, name) {
-  const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) throw new Error(`invalid_${name}`);
-  return number;
+function positiveFinite(value, name) {
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`invalid_${name}`);
+  return value;
 }
 
 function integerAtLeast(value, name, minimum = 0) {
-  const number = Number(value);
-  if (!Number.isInteger(number) || number < minimum) throw new Error(`invalid_${name}`);
-  return number;
+  if (!Number.isInteger(value) || value < minimum) throw new Error(`invalid_${name}`);
+  return value;
+}
+
+function normalizeLimits(input = {}) {
+  const merged = { ...DEFAULT_LIMITS, ...input };
+  return Object.freeze({
+    maxInputTokens: integerAtLeast(merged.maxInputTokens, 'max_input_tokens', 1),
+    maxOutputTokens: integerAtLeast(merged.maxOutputTokens, 'max_output_tokens', 1),
+    maxRequestCostUsd: positiveFinite(merged.maxRequestCostUsd, 'max_request_cost_usd'),
+    dailyBudgetUsd: positiveFinite(merged.dailyBudgetUsd, 'daily_budget_usd'),
+    providerTimeoutMs: integerAtLeast(merged.providerTimeoutMs, 'provider_timeout_ms', 1)
+  });
 }
 
 export function estimateTokens(text) {
-  if (typeof text !== 'string') throw new Error('invalid_model_input');
-  return Math.ceil(Buffer.byteLength(text, 'utf8') / 4);
+  if (typeof text !== 'string') throw new Error('invalid_text');
+  return Math.max(1, Math.ceil(text.length / 4));
 }
 
 export function estimatePromptTokens(messages) {
   if (!Array.isArray(messages)) throw new Error('invalid_messages');
   return messages.reduce((total, message) => {
-    if (!message || typeof message !== 'object' || typeof message.content !== 'string') throw new Error('invalid_message');
-    return total + estimateTokens(message.content) + 4;
+    if (!message || typeof message.role !== 'string' || typeof message.content !== 'string') throw new Error('invalid_message');
+    return total + estimateTokens(message.role) + estimateTokens(message.content) + 2;
   }, 0);
 }
 
-export function calculateCostUsd(usage, pricing = {}) {
-  const input = finiteNonNegative(usage?.inputTokens ?? 0, 'input_tokens');
-  const output = finiteNonNegative(usage?.outputTokens ?? 0, 'output_tokens');
-  const inputPerMillion = finiteNonNegative(pricing.inputPerMillionTokens ?? 0, 'input_price');
-  const outputPerMillion = finiteNonNegative(pricing.outputPerMillionTokens ?? 0, 'output_price');
-  return Number(((input * inputPerMillion + output * outputPerMillion) / 1_000_000).toFixed(8));
+export function calculateCostUsd({ inputTokens, outputTokens }, pricing = {}) {
+  const input = integerAtLeast(inputTokens, 'input_tokens');
+  const output = integerAtLeast(outputTokens, 'output_tokens');
+  const inputRate = Number(pricing.inputPerMillionTokens ?? 0);
+  const outputRate = Number(pricing.outputPerMillionTokens ?? 0);
+  if (!Number.isFinite(inputRate) || inputRate < 0 || !Number.isFinite(outputRate) || outputRate < 0) throw new Error('invalid_model_pricing');
+  return (input * inputRate + output * outputRate) / 1_000_000;
 }
 
 export class CostController {
   constructor({ limits = {}, clock = () => Date.now() } = {}) {
-    this.limits = {
-      maxInputTokens: integerAtLeast(limits.maxInputTokens ?? DEFAULT_LIMITS.maxInputTokens, 'max_input_tokens', 1),
-      maxOutputTokens: integerAtLeast(limits.maxOutputTokens ?? DEFAULT_LIMITS.maxOutputTokens, 'max_output_tokens', 1),
-      maxRequestCostUsd: finiteNonNegative(limits.maxRequestCostUsd ?? DEFAULT_LIMITS.maxRequestCostUsd, 'max_request_cost_usd'),
-      dailyBudgetUsd: finiteNonNegative(limits.dailyBudgetUsd ?? DEFAULT_LIMITS.dailyBudgetUsd, 'daily_budget_usd'),
-      providerTimeoutMs: integerAtLeast(limits.providerTimeoutMs ?? DEFAULT_LIMITS.providerTimeoutMs, 'provider_timeout_ms', 1)
-    };
+    this.limits = normalizeLimits(limits);
     this.clock = clock;
-    this.day = this.dayKey();
     this.spentUsd = 0;
     this.reservedUsd = 0;
     this.requests = 0;
+    this.day = this.dayKey();
     this.reservations = new Map();
   }
 
-  dayKey() { return new Date(this.clock()).toISOString().slice(0, 10); }
+  dayKey() {
+    return new Date(this.clock()).toISOString().slice(0, 10);
+  }
 
   resetIfNeeded() {
-    const day = this.dayKey();
-    if (day !== this.day) {
-      this.day = day;
+    const currentDay = this.dayKey();
+    if (currentDay !== this.day) {
+      this.day = currentDay;
       this.spentUsd = 0;
       this.reservedUsd = 0;
       this.requests = 0;
@@ -68,67 +79,70 @@ export class CostController {
 
   preflight({ inputTokens, maxOutputTokens, estimatedCostUsd }) {
     this.resetIfNeeded();
-    const input = integerAtLeast(inputTokens, 'input_tokens');
-    const output = integerAtLeast(maxOutputTokens, 'max_output_tokens');
-    const estimate = finiteNonNegative(estimatedCostUsd, 'estimated_cost_usd');
-    if (input > this.limits.maxInputTokens) throw new Error('model_input_token_limit');
-    if (output > this.limits.maxOutputTokens) throw new Error('model_output_token_limit');
-    if (estimate > this.limits.maxRequestCostUsd) throw new Error('model_request_cost_limit');
-    if (this.spentUsd + this.reservedUsd + estimate > this.limits.dailyBudgetUsd) throw new Error('model_daily_budget_exceeded');
+    integerAtLeast(inputTokens, 'input_tokens');
+    integerAtLeast(maxOutputTokens, 'max_output_tokens', 1);
+    positiveFinite(Math.max(estimatedCostUsd, Number.EPSILON), 'estimated_cost_usd');
+    if (inputTokens > this.limits.maxInputTokens) throw new Error('model_input_token_limit');
+    if (maxOutputTokens > this.limits.maxOutputTokens) throw new Error('model_output_token_limit');
+    if (estimatedCostUsd > this.limits.maxRequestCostUsd) throw new Error('model_request_cost_limit');
+    if (this.spentUsd + this.reservedUsd + estimatedCostUsd > this.limits.dailyBudgetUsd) throw new Error('model_daily_budget_exceeded');
     const reservationId = crypto.randomUUID();
-    this.reservations.set(reservationId, estimate);
-    this.reservedUsd = Number((this.reservedUsd + estimate).toFixed(8));
+    this.reservations.set(reservationId, estimatedCostUsd);
+    this.reservedUsd += estimatedCostUsd;
     return reservationId;
   }
 
   release(reservationId) {
-    this.resetIfNeeded();
     if (!reservationId) return;
-    const estimate = this.reservations.get(reservationId);
-    if (estimate === undefined) return;
+    const amount = this.reservations.get(reservationId);
+    if (amount === undefined) return;
     this.reservations.delete(reservationId);
-    this.reservedUsd = Number(Math.max(0, this.reservedUsd - estimate).toFixed(8));
+    this.reservedUsd = Math.max(0, this.reservedUsd - amount);
   }
 
   commit({ inputTokens, outputTokens, costUsd, reservationId }) {
     this.resetIfNeeded();
-    const input = integerAtLeast(inputTokens, 'input_tokens');
-    const output = integerAtLeast(outputTokens, 'output_tokens');
-    const cost = finiteNonNegative(costUsd, 'cost_usd');
-    if (input > this.limits.maxInputTokens) throw new Error('model_input_token_limit');
-    if (output > this.limits.maxOutputTokens) throw new Error('model_output_token_limit');
-    if (cost > this.limits.maxRequestCostUsd) throw new Error('model_request_cost_limit');
-    const reservation = reservationId ? this.reservations.get(reservationId) : undefined;
-    if (reservation !== undefined) this.release(reservationId);
-    if (this.spentUsd + cost > this.limits.dailyBudgetUsd) throw new Error('model_daily_budget_exceeded');
-    this.spentUsd = Number((this.spentUsd + cost).toFixed(8));
+    integerAtLeast(inputTokens, 'input_tokens');
+    integerAtLeast(outputTokens, 'output_tokens');
+    positiveFinite(Math.max(costUsd, Number.EPSILON), 'cost_usd');
+    if (inputTokens > this.limits.maxInputTokens) throw new Error('model_input_token_limit');
+    if (outputTokens > this.limits.maxOutputTokens) throw new Error('model_output_token_limit');
+    if (costUsd > this.limits.maxRequestCostUsd) throw new Error('model_request_cost_limit');
+    this.release(reservationId);
+    if (this.spentUsd + costUsd > this.limits.dailyBudgetUsd) throw new Error('model_daily_budget_exceeded');
+    this.spentUsd += costUsd;
     this.requests += 1;
   }
 
   snapshot() {
     this.resetIfNeeded();
-    return {
-      day: this.day,
-      spentUsd: this.spentUsd,
-      reservedUsd: this.reservedUsd,
-      availableUsd: Number(Math.max(0, this.limits.dailyBudgetUsd - this.spentUsd - this.reservedUsd).toFixed(8)),
-      requests: this.requests,
-      limits: { ...this.limits }
-    };
+    return { day: this.day, spentUsd: this.spentUsd, reservedUsd: this.reservedUsd, remainingUsd: Math.max(0, this.limits.dailyBudgetUsd - this.spentUsd - this.reservedUsd), requests: this.requests, limits: this.limits };
   }
 }
 
+export const localEchoProvider = Object.freeze({
+  name: 'local.echo',
+  model: 'deterministic-echo-v1',
+  description: 'Offline deterministic provider for development and safe tests.',
+  pricing: Object.freeze({ inputPerMillionTokens: 0, outputPerMillionTokens: 0 }),
+  async generate({ messages }) {
+    const last = messages[messages.length - 1];
+    return { text: last.content, usage: { inputTokens: estimatePromptTokens(messages), outputTokens: estimateTokens(last.content) } };
+  }
+});
+
 export class ModelProviderRegistry {
-  constructor({ providers = [], defaultProvider = 'local.echo', costController, clock = () => Date.now() } = {}) {
+  constructor({ providers = [], costController = new CostController(), defaultProvider = null, clock = () => Date.now() } = {}) {
     this.providers = new Map();
-    this.defaultProvider = defaultProvider;
-    this.costController = costController || new CostController();
+    this.costController = costController;
     this.clock = clock;
     for (const provider of providers) this.register(provider);
+    this.defaultProvider = defaultProvider || providers[0]?.name || 'local.echo';
+    if (!this.providers.has(this.defaultProvider)) throw new Error('model_default_provider_not_found');
   }
 
   register(provider) {
-    if (!provider || typeof provider !== 'object' || !NAME.test(provider.name || '') || typeof provider.generate !== 'function') throw new Error('invalid_model_provider');
+    if (!provider || typeof provider.name !== 'string' || !provider.name || typeof provider.generate !== 'function') throw new Error('invalid_model_provider');
     const normalized = {
       name: provider.name,
       model: typeof provider.model === 'string' && provider.model ? provider.model : provider.name,
@@ -179,6 +193,9 @@ export class ModelProviderRegistry {
           }),
           new Promise((_, reject) => setTimeout(() => reject(new Error('model_provider_timeout')), timeoutMs))
         ]);
+      } catch (error) {
+        if (controller.signal.aborted) throw new Error('model_provider_timeout');
+        throw error;
       } finally {
         clearTimeout(timer);
       }
@@ -196,7 +213,7 @@ export class ModelProviderRegistry {
         model: provider.model,
         text: result.text,
         usage: { ...usage, costUsd },
-        latencyMs: Math.max(0, this.clock() - startedAt)
+        durationMs: Math.max(0, this.clock() - startedAt)
       };
     } catch (error) {
       this.costController.release(reservationId);
@@ -204,29 +221,20 @@ export class ModelProviderRegistry {
     }
   }
 
-  budget() { return this.costController.snapshot(); }
+  budget() {
+    return this.costController.snapshot();
+  }
 }
 
-export const localEchoProvider = {
-  name: 'local.echo',
-  model: 'deterministic-echo-v1',
-  description: 'Offline deterministic provider for development, tests and safe fallback operation.',
-  pricing: { inputPerMillionTokens: 0, outputPerMillionTokens: 0 },
-  async generate({ messages }) {
-    const last = messages[messages.length - 1];
-    return { text: last.content, usage: { inputTokens: estimatePromptTokens(messages), outputTokens: estimateTokens(last.content) } };
-  }
-};
-
-export function createModelRegistry({ env = process.env } = {}) {
-  const costController = new CostController({
-    limits: {
-      maxInputTokens: env.OMNI_BRAIN_MODEL_MAX_INPUT_TOKENS || DEFAULT_LIMITS.maxInputTokens,
-      maxOutputTokens: env.OMNI_BRAIN_MODEL_MAX_OUTPUT_TOKENS || DEFAULT_LIMITS.maxOutputTokens,
-      maxRequestCostUsd: env.OMNI_BRAIN_MODEL_MAX_REQUEST_COST_USD ?? DEFAULT_LIMITS.maxRequestCostUsd,
-      dailyBudgetUsd: env.OMNI_BRAIN_MODEL_DAILY_BUDGET_USD ?? DEFAULT_LIMITS.dailyBudgetUsd,
-      providerTimeoutMs: env.OMNI_BRAIN_MODEL_PROVIDER_TIMEOUT_MS ?? DEFAULT_LIMITS.providerTimeoutMs
-    }
-  });
-  return new ModelProviderRegistry({ providers: [localEchoProvider], defaultProvider: env.OMNI_BRAIN_DEFAULT_MODEL_PROVIDER || 'local.echo', costController });
+export function createModelRegistry(env = process.env) {
+  const limits = {
+    maxInputTokens: env.OMNI_BRAIN_MODEL_MAX_INPUT_TOKENS,
+    maxOutputTokens: env.OMNI_BRAIN_MODEL_MAX_OUTPUT_TOKENS,
+    maxRequestCostUsd: env.OMNI_BRAIN_MODEL_MAX_REQUEST_COST_USD,
+    dailyBudgetUsd: env.OMNI_BRAIN_MODEL_DAILY_BUDGET_USD,
+    providerTimeoutMs: env.OMNI_BRAIN_MODEL_PROVIDER_TIMEOUT_MS
+  };
+  for (const key of Object.keys(limits)) if (limits[key] === undefined || limits[key] === '') delete limits[key];
+  const defaultProvider = env.OMNI_BRAIN_DEFAULT_MODEL_PROVIDER || 'local.echo';
+  return new ModelProviderRegistry({ providers: [localEchoProvider], costController: new CostController({ limits }), defaultProvider });
 }
