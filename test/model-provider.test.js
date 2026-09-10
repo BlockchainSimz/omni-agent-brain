@@ -17,8 +17,8 @@ test('cost controller rejects requests above token and daily budgets', () => {
   assert.throws(() => controller.preflight({ inputTokens: 11, maxOutputTokens: 1, estimatedCostUsd: 0 }), /model_input_token_limit/);
   assert.throws(() => controller.preflight({ inputTokens: 1, maxOutputTokens: 6, estimatedCostUsd: 0 }), /model_output_token_limit/);
   assert.throws(() => controller.preflight({ inputTokens: 1, maxOutputTokens: 1, estimatedCostUsd: 0.03 }), /model_request_cost_limit/);
-  controller.commit({ inputTokens: 1, outputTokens: 1, costUsd: 0.03 });
-  assert.throws(() => controller.preflight({ inputTokens: 1, maxOutputTokens: 1, estimatedCostUsd: 0.01 }), /model_daily_budget_exceeded/);
+  controller.commit({ inputTokens: 1, outputTokens: 1, costUsd: 0.02 });
+  assert.throws(() => controller.preflight({ inputTokens: 1, maxOutputTokens: 1, estimatedCostUsd: 0.011 }), /model_daily_budget_exceeded/);
 });
 
 test('token estimation and pricing are deterministic', () => {
