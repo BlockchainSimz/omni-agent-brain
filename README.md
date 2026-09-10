@@ -10,7 +10,7 @@ The service is a hardened foundation, not a complete autonomous AI platform. Ext
 
 ## Model/provider abstraction and cost controls
 
-Phase 16 adds a provider-neutral model interface without coupling the core to a specific commercial model vendor. Providers are trusted server-side adapters; callers cannot register or execute provider code through the HTTP API.
+Phase 16 provides a provider-neutral model interface without coupling the core to a specific commercial model vendor. Providers are trusted server-side adapters; callers cannot register or execute provider code through the HTTP API.
 
 The default `local.echo` provider is deterministic, offline, and free, making development and CI reproducible. External providers can be added later behind the same `ModelProviderRegistry` contract without changing the API surface.
 
@@ -24,9 +24,11 @@ POST /v1/models/generate
 
 `POST /v1/models/generate` accepts a bounded message array and optional provider/output-token settings. Responses include provider/model identity, request ID, measured usage, calculated cost and latency. Model generation is protected by the existing authentication, rate-limit and idempotency controls.
 
-### Cost controls
+### Cost and execution controls
 
-The model layer performs a preflight budget check before provider execution and a second authoritative usage/cost check after execution. Limits fail closed when exceeded.
+The model layer performs a preflight budget check **before** provider execution and reserves the estimated request cost. This reservation prevents concurrent requests from racing past the daily budget. Successful execution reconciles the reservation against authoritative provider usage; failed or timed-out execution releases the reservation.
+
+Every provider call also has a configurable execution timeout and receives an `AbortSignal` so future adapters can cancel upstream work. Output size, input tokens, output tokens, request cost and daily budget all fail closed when limits are exceeded.
 
 Environment variables:
 
@@ -35,6 +37,7 @@ Environment variables:
 - `OMNI_BRAIN_MODEL_MAX_OUTPUT_TOKENS` — per-request output-token ceiling, default `2048`.
 - `OMNI_BRAIN_MODEL_MAX_REQUEST_COST_USD` — maximum calculated cost for one request, default `$1`.
 - `OMNI_BRAIN_MODEL_DAILY_BUDGET_USD` — process-local daily spending ceiling, default `$10`.
+- `OMNI_BRAIN_MODEL_PROVIDER_TIMEOUT_MS` — provider execution timeout, default `30000ms`, maximum `300000ms`.
 
 The default pricing model is zero-cost because the bundled provider is offline. Provider adapters supply their own input/output price metadata. API responses never expose provider API keys or other secrets.
 
@@ -122,7 +125,7 @@ POST /v1/skills/:id/rollback
 4. ~~Source ingestion adapters for GitHub and approved knowledge sources~~ — GitHub adapter completed; additional approved providers remain
 5. ~~Evaluation/benchmark service with reproducible datasets~~ — deterministic benchmark engine and regression detection completed
 6. ~~Constrained safe tool execution~~ — allowlisted pure operations with bounded inputs/outputs and provenance completed
-7. ~~Model/provider abstraction and cost controls~~ — provider registry, deterministic offline provider, token ceilings, request cost ceilings and daily budget controls completed
+7. ~~Model/provider abstraction and cost controls~~ — provider registry, deterministic offline provider, reserved token/cost ceilings, request cost ceilings, daily budget controls and provider timeouts completed
 8. ~~Distributed observability, rate limiting and idempotency~~ — foundation completed
 9. Automated freshness/knowledge-decay jobs
 10. Human approval controls for high-impact capability changes
