@@ -12,6 +12,7 @@ export function validateRuntimeConfig(env = process.env) {
   const modelMaxOutputTokens = Number(env.OMNI_BRAIN_MODEL_MAX_OUTPUT_TOKENS || 2_048);
   const modelMaxRequestCostUsd = Number(env.OMNI_BRAIN_MODEL_MAX_REQUEST_COST_USD ?? 1);
   const modelDailyBudgetUsd = Number(env.OMNI_BRAIN_MODEL_DAILY_BUDGET_USD ?? 10);
+  const modelProviderTimeoutMs = Number(env.OMNI_BRAIN_MODEL_PROVIDER_TIMEOUT_MS ?? 30_000);
   const modelProvider = env.OMNI_BRAIN_DEFAULT_MODEL_PROVIDER || 'local.echo';
   const databaseTable = env.OMNI_BRAIN_DATABASE_TABLE || 'omni_brain_state';
   const rateLimitTable = env.OMNI_BRAIN_RATE_LIMIT_TABLE || 'omni_brain_rate_limits';
@@ -28,6 +29,7 @@ export function validateRuntimeConfig(env = process.env) {
   if (!Number.isInteger(modelMaxOutputTokens) || modelMaxOutputTokens < 1) throw new Error('invalid_model_output_tokens');
   if (!Number.isFinite(modelMaxRequestCostUsd) || modelMaxRequestCostUsd < 0) throw new Error('invalid_model_request_cost');
   if (!Number.isFinite(modelDailyBudgetUsd) || modelDailyBudgetUsd < 0) throw new Error('invalid_model_daily_budget');
+  if (!Number.isInteger(modelProviderTimeoutMs) || modelProviderTimeoutMs < 1 || modelProviderTimeoutMs > 300_000) throw new Error('invalid_model_provider_timeout');
   if (!/^[a-z][a-z0-9._-]{1,63}$/.test(modelProvider)) throw new Error('invalid_model_provider');
   if (!DATABASE_IDENTIFIER.test(databaseTable)) throw new Error('invalid_postgres_table');
   if (!DATABASE_IDENTIFIER.test(rateLimitTable)) throw new Error('invalid_rate_limit_table');
@@ -35,5 +37,5 @@ export function validateRuntimeConfig(env = process.env) {
   if (!DATABASE_IDENTIFIER.test(vectorTable)) throw new Error('invalid_vector_table');
   if (runtimeEnv === 'production' && !env.OMNI_BRAIN_API_KEY) throw new Error('missing_production_api_key');
   if (runtimeEnv === 'production' && !env.OMNI_BRAIN_DATABASE_URL) throw new Error('missing_production_database_url');
-  return { port, rateLimit, rateLimitMaxEntries, idempotencyTtlMs, idempotencyLeaseMs, idempotencyMaxEntries, databaseTable, rateLimitTable, idempotencyTable, vectorTable, modelMaxInputTokens, modelMaxOutputTokens, modelMaxRequestCostUsd, modelDailyBudgetUsd, modelProvider };
+  return { port, rateLimit, rateLimitMaxEntries, idempotencyTtlMs, idempotencyLeaseMs, idempotencyMaxEntries, databaseTable, rateLimitTable, idempotencyTable, vectorTable, modelMaxInputTokens, modelMaxOutputTokens, modelMaxRequestCostUsd, modelDailyBudgetUsd, modelProviderTimeoutMs, modelProvider };
 }
