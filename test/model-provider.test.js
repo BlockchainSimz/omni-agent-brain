@@ -48,7 +48,13 @@ test('provider execution is bounded by the configured timeout', async () => {
   const provider = {
     ...localEchoProvider,
     name: 'test.timeout',
-    async generate() { await new Promise(resolve => setTimeout(resolve, 50)); return { text: 'late' }; }
+    async generate({ signal }) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 50);
+        signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')); }, { once: true });
+      });
+      return { text: 'late' };
+    }
   };
   const controller = new CostController({ limits: { providerTimeoutMs: 10 } });
   const registry = new ModelProviderRegistry({ providers: [provider], costController: controller });
