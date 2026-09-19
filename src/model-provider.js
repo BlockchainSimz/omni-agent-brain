@@ -176,29 +176,24 @@ export class ModelProviderRegistry {
     const requestId = crypto.randomUUID();
     const startedAt = this.clock();
     const timeoutMs = this.costController.limits.providerTimeoutMs;
+    let timeoutHandle;
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      timer.unref?.();
-      let result;
-      try {
-        result = await Promise.race([
-          provider.generate({
-            requestId,
-            model: provider.model,
-            messages: structuredClone(messages),
-            maxOutputTokens,
-            temperature: request.temperature,
-            signal: controller.signal
-          }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('model_provider_timeout')), timeoutMs))
-        ]);
-      } catch (error) {
-        if (controller.signal.aborted) throw new Error('model_provider_timeout');
-        throw error;
-      } finally {
-        clearTimeout(timer);
-      }
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          controller.abort();
+          reject(new Error('model_provider_timeout'));
+        }, timeoutMs);
+      });
+      const providerPromise = Promise.resolve().then(() => provider.generate({
+        requestId,
+        model: provider.model,
+        messages: structuredClone(messages),
+        maxOutputTokens,
+        temperature: request.temperature,
+        signal: controller.signal
+      }));
+      const result = await Promise.race([providerPromise, timeoutPromise]);
       if (!result || typeof result.text !== 'string') throw new Error('invalid_model_response');
       if (Buffer.byteLength(result.text, 'utf8') > 256 * 1024) throw new Error('model_output_too_large');
       const usage = {
@@ -218,6 +213,8 @@ export class ModelProviderRegistry {
     } catch (error) {
       this.costController.release(reservationId);
       throw error;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
   }
 
