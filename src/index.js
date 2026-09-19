@@ -18,6 +18,9 @@ import { createModelRegistry } from './model-provider.js';
 import { consolidate, detectConflicts } from './consolidation.js';
 import { validateRequest, validateHttpRequest, RateLimiter, IdempotencyStore, createRequestContext, errorResponse } from './service-hardening.js';
 import { RuntimeObservability } from './runtime-observability.js';
+import { FreshnessScheduler } from './freshness.js';
+import { ApprovalService } from './approval.js';
+import { EmbeddingRegistry } from './embedding-lifecycle.js';
 
 const config = validateRuntimeConfig();
 const databaseUrl = process.env.OMNI_BRAIN_DATABASE_URL;
@@ -55,6 +58,9 @@ const tools = new SafeToolExecutor();
 const models = createModelRegistry({ env: { ...process.env, OMNI_BRAIN_MODEL_MAX_INPUT_TOKENS: config.modelMaxInputTokens, OMNI_BRAIN_MODEL_MAX_OUTPUT_TOKENS: config.modelMaxOutputTokens, OMNI_BRAIN_MODEL_MAX_REQUEST_COST_USD: config.modelMaxRequestCostUsd, OMNI_BRAIN_MODEL_DAILY_BUDGET_USD: config.modelDailyBudgetUsd, OMNI_BRAIN_MODEL_PROVIDER_TIMEOUT_MS: config.modelProviderTimeoutMs, OMNI_BRAIN_DEFAULT_MODEL_PROVIDER: config.modelProvider } });
 const port = config.port;
 const apiKey = process.env.OMNI_BRAIN_API_KEY || '';
+const approvals = new ApprovalService({ requiredApprovals: Number(process.env.OMNI_BRAIN_REQUIRED_APPROVALS || 1) });
+const embeddings = new EmbeddingRegistry();
+const freshness = new FreshnessScheduler({ store, halfLifeDays: Number(process.env.OMNI_BRAIN_FRESHNESS_HALF_LIFE_DAYS || 30), staleThreshold: Number(process.env.OMNI_BRAIN_FRESHNESS_STALE_THRESHOLD || 0.35), maxBatch: Number(process.env.OMNI_BRAIN_FRESHNESS_BATCH_SIZE || 100) });
 const observability = new RuntimeObservability({ dependencies: { brain_store: true, research: true, github: true, evaluations: true, safe_executor: true, model_registry: true, postgres: Boolean(databaseRuntime), vector_store: Boolean(vectorStore) } });
 let acceptingRequests = true;
 
@@ -111,6 +117,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/v1/tools') return json(res, 200, { tools: tools.listTools() }, context.requestId);
     if (req.method === 'GET' && url.pathname === '/v1/models') return json(res, 200, { providers: models.list(), budget: models.budget() }, context.requestId);
     if (req.method === 'GET' && url.pathname === '/v1/models/budget') return json(res, 200, { budget: models.budget() }, context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/embeddings/providers') return json(res, 200, { providers: embeddings.list() }, context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/freshness/status') return json(res, 200, freshness.status(), context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/freshness/plan') return json(res, 200, await freshness.plan(), context.requestId);
+    if (req.method === 'GET' && url.pathname === '/v1/approvals') return json(res, 200, { approvals: approvals.list() }, context.requestId);
     if (req.method === 'GET' && url.pathname === '/v1/memories/search') return json(res, 200, { results: await store.searchMemories(url.searchParams.get('q') || '', { limit: url.searchParams.get('limit'), minScore: url.searchParams.get('minScore') }) }, context.requestId);
     if (req.method === 'POST' && url.pathname === '/v1/memories') { const value = await readBody(); return json(res, 201, await runWrite(() => store.remember(validateRequest(value, { required: ['content'] }))), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/memories/') && url.pathname.endsWith('/validate')) { const value = await readBody(); return json(res, 200, await runWrite(() => store.validateMemory(url.pathname.split('/')[3], value)), context.requestId, idempotencyKey); }
@@ -124,6 +134,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/v1/knowledge/consolidation') return json(res, 200, consolidate((await store.snapshot()).memories), context.requestId);
     if (req.method === 'POST' && url.pathname === '/v1/evaluations/run') { const value = await readBody(); return json(res, 200, await runWrite(() => evaluations.run(value.dataset, value.outputs, { baseline: value.baseline, passThreshold: value.passThreshold, version: value.version })), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/models/generate') { const value = await readBody(); return json(res, 200, await runWrite(() => models.generate(validateRequest(value, { required: ['messages'] }))), context.requestId, idempotencyKey); }
+    if (req.method === 'POST' && url.pathname === '/v1/embeddings') { const value = await readBody(); return json(res, 200, await embeddings.embed(validateRequest(value, { required: ['text'] }).text, value.provider), context.requestId); }
+    if (req.method === 'POST' && url.pathname === '/v1/approvals') { const value = await readBody(); return json(res, 201, approvals.request(validateRequest(value, { required: ['action', 'target'] })), context.requestId); }
+    if (req.method === 'POST' && url.pathname.startsWith('/v1/approvals/') && url.pathname.endsWith('/approve')) { const value = await readBody(); return json(res, 200, approvals.approve(url.pathname.split('/')[3], value.approver), context.requestId); }
+    if (req.method === 'POST' && url.pathname.startsWith('/v1/approvals/') && url.pathname.endsWith('/reject')) { const value = await readBody(); return json(res, 200, approvals.reject(url.pathname.split('/')[3], value.reason), context.requestId); }
+    if (req.method === 'POST' && url.pathname.startsWith('/v1/approvals/') && url.pathname.endsWith('/consume')) return json(res, 200, approvals.consume(url.pathname.split('/')[3]), context.requestId);
     if (req.method === 'POST' && url.pathname === '/v1/tools/execute') { const value = await readBody(); return json(res, 200, await runWrite(() => tools.execute(value, { source: 'api' })), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/tools/execute-batch') { const value = await readBody(); return json(res, 200, await runWrite(() => tools.executeBatch(value.calls, { source: 'api' })), context.requestId, idempotencyKey); }
     if (req.method === 'POST' && url.pathname === '/v1/skills') { const value = await readBody(); return json(res, 201, await runWrite(() => store.proposeSkill(value)), context.requestId, idempotencyKey); }
@@ -140,8 +155,11 @@ server.keepAliveTimeout = 5_000;
 server.maxHeadersCount = 50;
 server.maxRequestsPerSocket = 1000;
 const cleanup = setInterval(async () => { try { await limiter.clearExpired(); } catch {} try { await idempotency.clearExpired(); } catch {} }, 60_000);
+const freshnessIntervalMs = Number(process.env.OMNI_BRAIN_FRESHNESS_INTERVAL_MS || 6 * 60 * 60 * 1000);
+const freshnessJob = setInterval(() => { freshness.run().catch(() => {}); }, freshnessIntervalMs);
+freshnessJob.unref();
 cleanup.unref();
-const shutdown = () => { if (!acceptingRequests) return; acceptingRequests = false; clearInterval(cleanup); const forceExit = setTimeout(() => process.exit(1), 10_000); forceExit.unref(); server.close(async () => { try { if (databaseRuntime) await databaseRuntime.close(); clearTimeout(forceExit); process.exit(0); } catch { clearTimeout(forceExit); process.exit(1); } }); };
+const shutdown = () => { if (!acceptingRequests) return; acceptingRequests = false; clearInterval(cleanup); clearInterval(freshnessJob); const forceExit = setTimeout(() => process.exit(1), 10_000); forceExit.unref(); server.close(async () => { try { if (databaseRuntime) await databaseRuntime.close(); clearTimeout(forceExit); process.exit(0); } catch { clearTimeout(forceExit); process.exit(1); } }); };
 process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
 if (process.env.NODE_ENV !== 'test') server.listen(port, () => console.log(`Omni Agent Brain listening on ${port}`));
-export { server, store, research, github, knowledge, learning, evaluations, tools, models, limiter, idempotency, vectorStore, observability, databaseRuntime, readiness };
+export { server, store, research, github, knowledge, learning, evaluations, tools, models, limiter, idempotency, vectorStore, observability, databaseRuntime, readiness, freshness, approvals, embeddings };
