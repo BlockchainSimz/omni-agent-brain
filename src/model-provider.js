@@ -177,8 +177,9 @@ export class ModelProviderRegistry {
     const startedAt = this.clock();
     const timeoutMs = this.costController.limits.providerTimeoutMs;
     let timeoutHandle;
+    let controller;
     try {
-      const controller = new AbortController();
+      controller = new AbortController();
       const timeoutPromise = new Promise((_, reject) => {
         timeoutHandle = setTimeout(() => {
           controller.abort();
@@ -212,6 +213,7 @@ export class ModelProviderRegistry {
       };
     } catch (error) {
       this.costController.release(reservationId);
+      if (controller?.signal.aborted) throw new Error('model_provider_timeout');
       throw error;
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
