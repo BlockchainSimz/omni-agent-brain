@@ -4,9 +4,9 @@ A provenance-aware foundation for a self-improving AI agent brain.
 
 ## Current status
 
-**v0.9.0 production foundation — Phase 16 model/provider abstraction and cost controls.** The repository contains an executable core, hardened HTTP API, PostgreSQL persistence, async concurrency controls, provenance tracking, guarded skill promotion, rollback support, authentication, rate limiting, idempotency, production Docker support, deterministic semantic retrieval, PostgreSQL/pgvector-backed vector search, separated episodic/semantic/procedural/working memory, controlled source-ingestion adapters, reproducible evaluation infrastructure, constrained tool execution, and a provider-neutral model execution layer with fail-closed token/cost budgets.
+**v1.0.0 production foundation — Phases 1–19 implemented and wired.** The repository contains an executable core, hardened HTTP API, PostgreSQL persistence, async concurrency controls, provenance tracking, guarded skill promotion, rollback support, authentication, rate limiting, idempotency, production Docker support, deterministic semantic retrieval, PostgreSQL/pgvector-backed vector search, separated episodic/semantic/procedural/working memory, controlled source-ingestion adapters, reproducible evaluation infrastructure, constrained tool execution, and a provider-neutral model execution layer with fail-closed token/cost budgets.
 
-The service is a hardened foundation, not a complete autonomous AI platform. External model-provider adapters, automated freshness jobs, human approval controls, and production model-backed embeddings remain roadmap work.
+The service is a production foundation with automated freshness scheduling, explicit human approval controls for governed actions, provider-neutral embeddings, vector lifecycle drift detection, and the existing persistence/reliability controls. Commercial model adapters remain deployer-specific integrations behind the provider contract.
 
 ## Model/provider abstraction and cost controls
 
@@ -127,8 +127,8 @@ POST /v1/skills/:id/rollback
 6. ~~Constrained safe tool execution~~ — allowlisted pure operations with bounded inputs/outputs and provenance completed
 7. ~~Model/provider abstraction and cost controls~~ — provider registry, deterministic offline provider, reserved token/cost ceilings, request cost ceilings, daily budget controls and provider timeouts completed
 8. ~~Distributed observability, rate limiting and idempotency~~ — foundation completed
-9. Automated freshness/knowledge-decay jobs
-10. Human approval controls for high-impact capability changes
-11. Production model-backed embeddings and vector lifecycle management
+9. ~~Automated freshness/knowledge-decay jobs~~ — scheduled revalidation planning and bounded execution wired into the service
+10. ~~Human approval controls for high-impact capability changes~~ — explicit approval request/approve/reject/consume workflow with expiry and multi-approval support
+11. ~~Production model-backed embeddings and vector lifecycle management~~ — provider registry, version/dimension metadata, deterministic baseline and reindex-drift detection
 
 See [`SECURITY.md`](SECURITY.md) for the self-modification and provenance policy.
