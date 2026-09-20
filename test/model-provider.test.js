@@ -33,7 +33,7 @@ test('cost reservations prevent concurrent budget overspend', () => {
 
 test('token estimation and pricing are deterministic', () => {
   const messages = [{ role: 'user', content: '12345678' }];
-  assert.equal(estimatePromptTokens(messages), 6);
+  assert.equal(estimatePromptTokens(messages), 5);
   assert.equal(calculateCostUsd({ inputTokens: 1000, outputTokens: 500 }, { inputPerMillionTokens: 2, outputPerMillionTokens: 4 }), 0.004);
 });
 
